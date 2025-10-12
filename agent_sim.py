@@ -86,6 +86,24 @@ class BestPlayerAgent(Agent):
     def select_player(self, available_players):
         return max(available_players, key=lambda p: p.elo_stats.overall_elo)
 
+class TopNRandomAgent(Agent):
+    """Selects one of the top N players available, randomly."""
+    def __init__(self, agent_id, name, strategy_description, n=5):
+        super().__init__(agent_id, name, strategy_description)
+        self.n = n
+
+    def select_player(self, available_players):
+        # Sort players by overall_elo in descending order
+        sorted_players = sorted(available_players, key=lambda p: p.elo_stats.overall_elo, reverse=True)
+        
+        # Determine the pool of top players to choose from (up to N)
+        top_n_pool = sorted_players[:self.n]
+        
+        # Randomly select one player from that pool
+        if not top_n_pool: # Should only happen if available_players is empty
+            return None 
+        return random.choice(top_n_pool)
+
 class PuntCategoryAgent(Agent):
     """Ignores one or more categories when evaluating players."""
     def __init__(self, agent_id, name, strategy_description, punt_categories):
@@ -224,8 +242,8 @@ def run_draft_simulations():
             BestPlayerAgent(1, "BPA Agent 1", "Picks best player available by overall_elo"),
             BestPlayerAgent(2, "BPA Agent 2", "Picks best player available by overall_elo"),
             BestPlayerAgent(3, "BPA Agent 3", "Picks best player available by overall_elo"),
-            BestPlayerAgent(4, "BPA Agent 4", "Picks best player available by overall_elo"),
-            BestPlayerAgent(5, "BPA Agent 5", "Picks best player available by overall_elo"),
+            TopNRandomAgent(4, "Top 5 Random 1", "Randomly picks from top 5 available players", n=5),
+            TopNRandomAgent(5, "Top 5 Random 2", "Randomly picks from top 5 available players", n=5),
             PuntCategoryAgent(6, "Punt TO Agent 1", "Ignores to_elo", ['to_elo']),
             AdaptivePuntAgent(7, "Adaptive Punt Agent", "BPA for 3 rounds, then punts worst category"),
             PuntCategoryAgent(8, "Casper Agent", "Only uses pts, reb, ast, stl, blk, tpm", ['fg_pct_elo', 'ft_pct_elo', 'to_elo']),
@@ -240,11 +258,15 @@ def run_draft_simulations():
             for agent in agents:
                 agent.reset()
 
+            # Randomize the draft order for each new simulation
+            drafting_agents = list(agents)
+            random.shuffle(drafting_agents)
+
             # --- Draft Phase ---
             for round_num in range(TEAM_SIZE):
                 team_order = range(NUM_TEAMS) if round_num % 2 == 0 else reversed(range(NUM_TEAMS))
                 for team_idx in team_order:
-                    agent = agents[team_idx]
+                    agent = drafting_agents[team_idx]
                     if available_players:
                         chosen_player = agent.select_player(available_players)
                         agent.team.append(chosen_player)
