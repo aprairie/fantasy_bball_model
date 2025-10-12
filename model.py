@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Simulation Constants ---
-NUM_SIMULATIONS = 10000
+NUM_SIMULATIONS = 50000
 NUM_TEAMS = 10
 TEAM_SIZE = 13
 INITIAL_ELO = 1500.0
@@ -178,13 +178,13 @@ def run_simulations():
         all_players = db.query(Player).options(joinedload(Player.game_stats)).all()
         players_with_games = [p for p in all_players if p.game_stats]
         
-        TARGET_PLAYER_COUNT = 160
+        TARGET_PLAYER_COUNT = 200
         if len(players_with_games) <= TARGET_PLAYER_COUNT:
             logger.info(f"Initial player count is at or below the target of {TARGET_PLAYER_COUNT}. Skipping culling phase.")
         else:
             # --- Culling Phase ---
             logger.info("--- Starting Player Culling Phase ---")
-            CULLING_SIMULATIONS_PER_CYCLE = 500
+            CULLING_SIMULATIONS_PER_CYCLE = 2500
             PLAYERS_TO_DROP_PER_CYCLE = 20
 
             while len(players_with_games) > TARGET_PLAYER_COUNT:
@@ -212,7 +212,12 @@ def run_simulations():
                         team_order = range(NUM_TEAMS) if round_num % 2 == 0 else reversed(range(NUM_TEAMS))
                         for team_idx in team_order:
                             if available_players:
-                                teams[team_idx].append(available_players.pop(0))
+                                # Pick a random player
+                                random_index = random.randrange(len(available_players))
+
+                                # Pop the item at that index and store it in the team.
+                                teams[team_idx].append(available_players.pop(random_index))
+                                # teams[team_idx].append(available_players.pop(0))
 
                     matchups = itertools.combinations(teams, 2)
                     for team_a, team_b in matchups:
