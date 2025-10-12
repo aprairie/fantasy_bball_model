@@ -15,7 +15,7 @@ services:
       timeout: 5s
       retries: 5
 
-  scraper:
+  python_scripts:
     build: .
     depends_on:
       db:
@@ -25,3 +25,14 @@ services:
 
 volumes:
   postgres_data:
+
+# is this a comment?
+# if you want to run everything
+#    docker compose up --build
+# if you want to just start the db
+#    docker compose up db
+# to stop everything and delete containers
+#    docker compose down
+# useful command, this dumps me into a sql terminal running inside the container
+#    docker compose exec db psql -U bball_user -d basketball_stats
+# 

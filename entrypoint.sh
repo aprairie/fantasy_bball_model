@@ -10,7 +10,10 @@ done
 echo "PostgreSQL is up - initializing database"
 python database.py
 
-echo "Starting scraper"
-python scraper.py
+# echo "Starting scraper"
+# python scraper.py
+
+echo "Starting model"
+python model.py
 
 echo "Scraping completed. Container will exit."

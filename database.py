@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime, Date
+from sqlalchemy import create_engine, Boolean, Column, Integer, String, Float, ForeignKey, DateTime, Date
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
@@ -23,6 +23,7 @@ class Player(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     game_stats = relationship("GameStats", back_populates="player")
+    elo_stats = relationship("EloStats", back_populates="player", uselist=False) # One-to-one
 
 class GameStats(Base):
     __tablename__ = "game_stats"
@@ -61,6 +62,41 @@ class GameStats(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     player = relationship("Player", back_populates="game_stats")
+
+class EloStats(Base):
+    """
+    Stores the overall and category-specific ELO ratings for each player.
+    """
+    __tablename__ = "elo_stats"
+
+    id = Column(Integer, primary_key=True, index=True)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False, unique=True)
+    
+    # ELO ratings
+    overall_elo = Column(Float, nullable=False, default=1500)
+    fg_pct_elo = Column(Float, nullable=False, default=1500)
+    ft_pct_elo = Column(Float, nullable=False, default=1500)
+    pts_elo = Column(Float, nullable=False, default=1500)
+    reb_elo = Column(Float, nullable=False, default=1500)
+    ast_elo = Column(Float, nullable=False, default=1500)
+    stl_elo = Column(Float, nullable=False, default=1500)
+    blk_elo = Column(Float, nullable=False, default=1500)
+    to_elo = Column(Float, nullable=False, default=1500) # Turnovers
+    tpm_elo = Column(Float, nullable=False, default=1500) # Three-Pointers Made
+    dropped_player = Column(Boolean, nullable=False, default=False) # Whether player is removed from simulations.
+    
+    # Relationship
+    player = relationship("Player", back_populates="elo_stats")
+
+class SimulationInfo(Base):
+    """
+    A simple table to store metadata about the simulation, like how many have been run.
+    We assume only one row will exist in this table.
+    """
+    __tablename__ = "simulation_info"
+    id = Column(Integer, primary_key=True, index=True)
+    simulation_count = Column(Integer, default=0, nullable=False)
+
 
 def init_db():
     Base.metadata.create_all(bind=engine)
