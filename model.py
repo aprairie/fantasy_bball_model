@@ -3,9 +3,10 @@ import itertools
 from collections import defaultdict
 from sqlalchemy.orm import joinedload
 from database import SessionLocal, Player, GameStats, EloStats, SimulationInfo
-from pprint import pprint
-import random
+import logging
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- Simulation Constants ---
 NUM_SIMULATIONS = 10000
@@ -14,7 +15,7 @@ TEAM_SIZE = 13
 INITIAL_ELO = 1500.0
 K_FACTOR = 5  # Lowered the update factor a lot, since we can run many simulations.
 
-# The 9 fantasy categories
+# The 9 fantasy categories and their corresponding ELO attribute names
 CATEGORIES = {
     'pts': 'pts_elo',
     'reb': 'reb_elo',
@@ -32,184 +33,204 @@ def calculate_expected_outcome(team_avg_elo, opponent_avg_elo):
     return 1 / (1 + 10 ** ((opponent_avg_elo - team_avg_elo) / 400))
 
 def update_elos(winner_team, loser_team, elo_data, category_key):
-    """Updates ELO ratings for all players on winning and losing teams."""
-    # 1. Calculate average team ELOs for the specific category
+    """Updates ELO ratings for all players on winning and losing teams for a specific category."""
+    # 1. Ensure teams are not empty to avoid division by zero
+    if not winner_team or not loser_team:
+        return
+
+    # 2. Calculate average team ELOs for the specific category
     avg_elo_winner = sum(elo_data[p.id][category_key] for p in winner_team) / len(winner_team)
     avg_elo_loser = sum(elo_data[p.id][category_key] for p in loser_team) / len(loser_team)
 
-    # 2. Calculate expected outcome
+    # 3. Calculate expected outcome
     expected_win_prob = calculate_expected_outcome(avg_elo_winner, avg_elo_loser)
 
-    # 3. Calculate ELO change
+    # 4. Calculate ELO change
     elo_change = K_FACTOR * (1 - expected_win_prob)
 
-    # 4. Apply the change to each player
+    # 5. Apply the change to each player
     for player in winner_team:
         elo_data[player.id][category_key] += elo_change
     for player in loser_team:
         elo_data[player.id][category_key] -= elo_change
 
-def get_game(player_id, player_games):
-    result_dict = {}
-    if not player_games[player_id]:
+def get_random_game_stats(player_id, player_games):
+    """
+    Selects a single random game from a player's history and returns its stats.
+    Returns a dictionary of stats, with 0.0 for any missing data points.
+    """
+    if not player_games.get(player_id):
         return None
+
     game = random.choice(player_games[player_id])
-    result_dict['points'] = 0.0 if game.points is None else game.points
-    result_dict['reb'] = 0.0 if game.total_rebounds is None else game.total_rebounds
-    result_dict['ast'] = 0.0 if game.assists is None else game.assists
-    result_dict['stl'] = 0.0 if game.steals is None else game.steals
-    result_dict['blk'] = 0.0 if game.blocks is None else game.blocks
-    result_dict['tpm'] = 0.0 if game.three_pointers is None else game.three_pointers
-    result_dict['to'] = 0.0 if game.turnovers is None else game.turnovers
-    result_dict['fgm'] = 0.0 if game.field_goals is None else game.field_goals
-    result_dict['fga'] = 0.0 if game.field_goal_attempts is None else game.field_goal_attempts
-    result_dict['ftm'] = 0.0 if game.free_throws is None else game.free_throws
-    result_dict['fta'] = 0.0 if game.free_throw_attempts is None else game.free_throw_attempts
-    return result_dict
+    
+    # Return a dictionary with stats, handling potential None values
+    return {
+        'pts': game.points or 0.0,
+        'reb': game.total_rebounds or 0.0,
+        'ast': game.assists or 0.0,
+        'stl': game.steals or 0.0,
+        'blk': game.blocks or 0.0,
+        'tpm': game.three_pointers or 0.0,
+        'to': game.turnovers or 0.0,
+        'fgm': game.field_goals or 0.0,
+        'fga': game.field_goal_attempts or 0.0,
+        'ftm': game.free_throws or 0.0,
+        'fta': game.free_throw_attempts or 0.0,
+    }
 
-
+def aggregate_team_stats(team, player_games):
+    """
+    Aggregates the stats for an entire team for a weekly matchup.
+    Each player contributes stats from a random 3 or 4 of their games.
+    """
+    team_stats = defaultdict(float)
+    for player in team:
+        # Simulate a player playing 3 or 4 games in a fantasy week
+        num_games = random.randint(3, 4)
+        for _ in range(num_games):
+            game_stats = get_random_game_stats(player.id, player_games)
+            if game_stats is None:
+                continue
+            
+            # Sum up the stats from the selected game
+            for stat, value in game_stats.items():
+                team_stats[stat] += value
+    
+    # Calculate percentage stats after aggregating counting stats
+    team_stats['fg_pct'] = team_stats['fgm'] / team_stats['fga'] if team_stats['fga'] else 0
+    team_stats['ft_pct'] = team_stats['ftm'] / team_stats['fta'] if team_stats['fta'] else 0
+    return team_stats
 
 
 def play_matchup(team_a, team_b, elo_data, player_games):
-    """Simulates a matchup between two teams and updates ELOs."""
-    team_a_stats = defaultdict(float)
-    team_b_stats = defaultdict(float)
-    
-    # Aggregate stats for Team A
-    for player in team_a:
-        # players play 3 or 4 games per week
-        num_games = random.randint(3,4)
-        for i in range(num_games):
-            game = get_game(player.id, player_games)
-            if game is None: continue
-            team_a_stats['pts'] += game['points']
-            team_a_stats['reb'] += game['reb']
-            team_a_stats['ast'] += game['ast']
-            team_a_stats['stl'] += game['stl']
-            team_a_stats['blk'] += game['blk']
-            team_a_stats['tpm'] += game['tpm']
-            team_a_stats['to'] += game['to']
-            team_a_stats['fgm'] += game['fgm']
-            team_a_stats['fga'] += game['fga']
-            team_a_stats['ftm'] += game['ftm']
-            team_a_stats['fta'] += game['fta']
-        
-    # Aggregate stats for Team B
-    for player in team_b:
-        # players play 3 or 4 games per week
-        num_games = random.randint(3,4)
-        for i in range(num_games):
-            game = get_game(player.id, player_games)
-            if game is None: continue
-            team_b_stats['pts'] += game['points']
-            team_b_stats['reb'] += game['reb']
-            team_b_stats['ast'] += game['ast']
-            team_b_stats['stl'] += game['stl']
-            team_b_stats['blk'] += game['blk']
-            team_b_stats['tpm'] += game['tpm']
-            team_b_stats['to'] += game['to']
-            team_b_stats['fgm'] += game['fgm']
-            team_b_stats['fga'] += game['fga']
-            team_b_stats['ftm'] += game['ftm']
-            team_b_stats['fta'] += game['fta']
+    """Simulates a matchup between two teams, determines category winners, and updates ELOs."""
+    team_a_stats = aggregate_team_stats(team_a, player_games)
+    team_b_stats = aggregate_team_stats(team_b, player_games)
 
-    # Calculate percentages
-    team_a_stats['fg_pct'] = team_a_stats['fgm'] / team_a_stats['fga'] if team_a_stats['fga'] else 0
-    team_a_stats['ft_pct'] = team_a_stats['ftm'] / team_a_stats['fta'] if team_a_stats['fta'] else 0
-    team_b_stats['fg_pct'] = team_b_stats['fgm'] / team_b_stats['fga'] if team_b_stats['fga'] else 0
-    team_b_stats['ft_pct'] = team_b_stats['ftm'] / team_b_stats['fta'] if team_b_stats['fta'] else 0
-
-    # Determine winners for each category
     team_a_score = 0
     team_b_score = 0
 
+    # Determine winners for each category
     for cat_name, elo_key in CATEGORIES.items():
-        # For turnovers, lower is better
-        if cat_name == 'to':
-            if team_a_stats[cat_name] < team_b_stats[cat_name]:
-                update_elos(team_a, team_b, elo_data, elo_key)
-                team_a_score += 1
-            elif team_b_stats[cat_name] < team_a_stats[cat_name]:
-                update_elos(team_b, team_a, elo_data, elo_key)
-                team_b_score += 1
-        else:
-            if team_a_stats[cat_name] > team_b_stats[cat_name]:
-                update_elos(team_a, team_b, elo_data, elo_key)
-                team_a_score += 1
-            elif team_b_stats[cat_name] > team_a_stats[cat_name]:
-                update_elos(team_b, team_a, elo_data, elo_key)
-                team_b_score += 1
+        val_a = team_a_stats[cat_name]
+        val_b = team_b_stats[cat_name]
+        
+        # For turnovers, a lower score is better
+        is_turnover_cat = (cat_name == 'to')
+        
+        winner, loser = (None, None)
+        
+        if (is_turnover_cat and val_a < val_b) or (not is_turnover_cat and val_a > val_b):
+            winner, loser = team_a, team_b
+            team_a_score += 1
+        elif (is_turnover_cat and val_b < val_a) or (not is_turnover_cat and val_b > val_a):
+            winner, loser = team_b, team_a
+            team_b_score += 1
+        
+        if winner and loser:
+            update_elos(winner, loser, elo_data, elo_key)
 
-    # Update overall ELO based on the final score
+    # Update overall ELO based on the final matchup score
     if team_a_score > team_b_score:
         update_elos(team_a, team_b, elo_data, 'overall_elo')
     elif team_b_score > team_a_score:
         update_elos(team_b, team_a, elo_data, 'overall_elo')
 
+
 def run_simulations():
-    """Main function to orchestrate the fantasy basketball ELO simulation."""
+    """Main function to orchestrate the fantasy basketball ELO simulation with a player culling phase."""
     db = SessionLocal()
     try:
-        print("Loading player and game data from the database...")
-        # Eagerly load game_stats to avoid N+1 query problems later
+        # --- Initial Data Loading ---
+        logger.info("Loading player and game data from the database...")
         all_players = db.query(Player).options(joinedload(Player.game_stats)).all()
-        
-        # Filter out players with no game stats to avoid errors
         players_with_games = [p for p in all_players if p.game_stats]
         
-        if not players_with_games:
-            print("No players with game stats found in the database. Exiting.")
-            return
+        TARGET_PLAYER_COUNT = 160
+        if len(players_with_games) <= TARGET_PLAYER_COUNT:
+            logger.info(f"Initial player count is at or below the target of {TARGET_PLAYER_COUNT}. Skipping culling phase.")
+        else:
+            # --- Culling Phase ---
+            logger.info("--- Starting Player Culling Phase ---")
+            CULLING_SIMULATIONS_PER_CYCLE = 500
+            PLAYERS_TO_DROP_PER_CYCLE = 20
 
-        print(f"{len(players_with_games)} players with game data loaded.")
-        
-        # Create a dictionary for quick access to a player's games
+            while len(players_with_games) > TARGET_PLAYER_COUNT:
+                current_player_count = len(players_with_games)
+                logger.info(f"\nStarting culling cycle with {current_player_count} players...")
+                
+                player_games = {p.id: p.game_stats for p in players_with_games}
+
+                # Reset ELO ratings for all players at the start of the cycle
+                elo_data = {}
+                for player in players_with_games:
+                    elo_data[player.id] = {key: INITIAL_ELO for key in CATEGORIES.values()}
+                    elo_data[player.id]['overall_elo'] = INITIAL_ELO
+
+                # Run a smaller number of simulations for this culling cycle
+                for i in range(CULLING_SIMULATIONS_PER_CYCLE):
+                    # Sort players for drafting in each simulation
+                    available_players = sorted(
+                        players_with_games, 
+                        key=lambda p: elo_data.get(p.id, {}).get('overall_elo', INITIAL_ELO),
+                        reverse=True
+                    )
+                    
+                    teams = [[] for _ in range(NUM_TEAMS)]
+                    for round_num in range(TEAM_SIZE):
+                        team_order = range(NUM_TEAMS) if round_num % 2 == 0 else reversed(range(NUM_TEAMS))
+                        for team_idx in team_order:
+                            if available_players:
+                                teams[team_idx].append(available_players.pop(0))
+
+                    matchups = itertools.combinations(teams, 2)
+                    for team_a, team_b in matchups:
+                        play_matchup(team_a, team_b, elo_data, player_games)
+
+                # Identify and drop the lowest-ranked players
+                logger.info("Culling cycle complete. Dropping lowest-ranked players...")
+                sorted_by_elo = sorted(players_with_games, key=lambda p: elo_data[p.id]['overall_elo'])
+                
+                num_to_drop = min(PLAYERS_TO_DROP_PER_CYCLE, current_player_count - TARGET_PLAYER_COUNT)
+                if num_to_drop <= 0: break
+
+                players_with_games = sorted_by_elo[num_to_drop:]
+                # dropped_players = sorted_by_elo[]
+                logger.info(f"Dropped {num_to_drop} players. {len(players_with_games)} players remaining.")
+
+        # --- Final Simulation Run ---
+        logger.info(f"\n--- Culling complete. Starting final simulation with {len(players_with_games)} players. ---")
+
         player_games = {p.id: p.game_stats for p in players_with_games}
 
-        # --- Initialize ELO Ratings ---
-        existing_elos = {elo.player_id: elo for elo in db.query(EloStats).all()}
+        # Reset ELO ratings for the final group of players before the main simulation
+        logger.info("Resetting ELO ratings for final run...")
         elo_data = {}
-        
         for player in players_with_games:
-            if player.id in existing_elos:
-                p_elo = existing_elos[player.id]
-                elo_data[player.id] = {
-                    'overall_elo': p_elo.overall_elo,
-                    'fg_pct_elo': p_elo.fg_pct_elo,
-                    'ft_pct_elo': p_elo.ft_pct_elo,
-                    'pts_elo': p_elo.pts_elo,
-                    'reb_elo': p_elo.reb_elo,
-                    'ast_elo': p_elo.ast_elo,
-                    'stl_elo': p_elo.stl_elo,
-                    'blk_elo': p_elo.blk_elo,
-                    'to_elo': p_elo.to_elo,
-                    'tpm_elo': p_elo.tpm_elo,
-                }
-            else: # If player has no ELO entry yet, create one
-                elo_data[player.id] = {key: INITIAL_ELO for key in CATEGORIES.values()}
-                elo_data[player.id]['overall_elo'] = INITIAL_ELO
+            elo_data[player.id] = {key: INITIAL_ELO for key in CATEGORIES.values()}
+            elo_data[player.id]['overall_elo'] = INITIAL_ELO
 
         # --- Main Simulation Loop ---
         for i in range(NUM_SIMULATIONS):
-            print(f"Running simulation {i + 1}/{NUM_SIMULATIONS}...")
+            logger.info(f"Running simulation {i + 1}/{NUM_SIMULATIONS}...")
             
             # Sort players by overall ELO for drafting
-            # TODO, is this correct? some players may never get selected
             available_players = sorted(
                 players_with_games, 
                 key=lambda p: elo_data.get(p.id, {}).get('overall_elo', INITIAL_ELO),
                 reverse=True
             )
             
-            # Draft teams
+            # --- Draft teams using a snake draft for fairness ---
             teams = [[] for _ in range(NUM_TEAMS)]
             for round_num in range(TEAM_SIZE):
-                for team_idx in range(NUM_TEAMS):
+                # Reverse team order for even-numbered rounds (snake draft)
+                team_order = range(NUM_TEAMS) if round_num % 2 == 0 else reversed(range(NUM_TEAMS))
+                
+                for team_idx in team_order:
                     if available_players:
-                        # For now, pick a random player, maybe change this later
-                        player_to_draft = random.choice(available_players)
-                        available_players.remove(player_to_draft)
-                        # player_to_draft = available_players.pop(0)
+                        player_to_draft = available_players.pop(0) # Best available player
                         teams[team_idx].append(player_to_draft)
 
             # Play a full round-robin set of matchups
@@ -218,8 +239,9 @@ def run_simulations():
                 play_matchup(team_a, team_b, elo_data, player_games)
 
         # --- Update Database After All Simulations ---
-        print("\nAll simulations complete. Updating the database...")
+        logger.info("\nAll simulations complete. Updating the database...")
         
+        # Note: This will only update the players who made it through the culling process
         for player_id, ratings in elo_data.items():
             elo_record = db.query(EloStats).filter(EloStats.player_id == player_id).first()
             if not elo_record:
@@ -227,30 +249,23 @@ def run_simulations():
                 db.add(elo_record)
             
             # Assign updated values
-            elo_record.overall_elo = ratings['overall_elo']
-            elo_record.fg_pct_elo = ratings['fg_pct_elo']
-            elo_record.ft_pct_elo = ratings['ft_pct_elo']
-            elo_record.pts_elo = ratings['pts_elo']
-            elo_record.reb_elo = ratings['reb_elo']
-            elo_record.ast_elo = ratings['ast_elo']
-            elo_record.stl_elo = ratings['stl_elo']
-            elo_record.blk_elo = ratings['blk_elo']
-            elo_record.to_elo = ratings['to_elo']
-            elo_record.tpm_elo = ratings['tpm_elo']
+            for key, value in ratings.items():
+                setattr(elo_record, key, value)
 
         # Update simulation count
         sim_info = db.query(SimulationInfo).first()
         if not sim_info:
-            sim_info = SimulationInfo(simulation_count=NUM_SIMULATIONS)
+            sim_info = SimulationInfo(simulation_count=0)
             db.add(sim_info)
-        else:
-            sim_info.simulation_count += NUM_SIMULATIONS
+        
+        sim_info.simulation_count += NUM_SIMULATIONS
         
         db.commit()
-        print("Database has been successfully updated with new ELO ratings.")
+        logger.info("Database has been successfully updated with new ELO ratings for the top players.")
 
     finally:
         db.close()
 
 if __name__ == "__main__":
     run_simulations()
+
