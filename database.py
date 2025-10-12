@@ -83,6 +83,16 @@ class EloStats(Base):
     blk_elo = Column(Float, nullable=False, default=1500)
     to_elo = Column(Float, nullable=False, default=1500) # Turnovers
     tpm_elo = Column(Float, nullable=False, default=1500) # Three-Pointers Made
+    overall_elo_guaranteed = Column(Float, nullable=False, default=1500)
+    fg_pct_elo_guaranteed = Column(Float, nullable=False, default=1500)
+    ft_pct_elo_guaranteed = Column(Float, nullable=False, default=1500)
+    pts_elo_guaranteed = Column(Float, nullable=False, default=1500)
+    reb_elo_guaranteed = Column(Float, nullable=False, default=1500)
+    ast_elo_guaranteed = Column(Float, nullable=False, default=1500)
+    stl_elo_guaranteed = Column(Float, nullable=False, default=1500)
+    blk_elo_guaranteed = Column(Float, nullable=False, default=1500)
+    to_elo_guaranteed = Column(Float, nullable=False, default=1500) # Turnovers
+    tpm_elo_guaranteed = Column(Float, nullable=False, default=1500) # Three-Pointers Made
     dropped_player = Column(Boolean, nullable=False, default=False) # Whether player is removed from simulations.
     
     # Relationship

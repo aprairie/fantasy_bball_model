@@ -63,6 +63,8 @@ def get_random_game_stats(player_id, player_games):
         return None
 
     game = random.choice(player_games[player_id])
+    if game.points is None:
+        return None
     
     # Return a dictionary with stats, handling potential None values
     return {
@@ -102,11 +104,41 @@ def aggregate_team_stats(team, player_games):
     team_stats['ft_pct'] = team_stats['ftm'] / team_stats['fta'] if team_stats['fta'] else 0
     return team_stats
 
+### CHANGE: Added a new function for the "guaranteed games" simulation.
+def aggregate_team_stats_guaranteed(team, player_games):
+    """
+    Aggregates team stats, ensuring that a player always contributes stats for their
+    simulated games by re-drawing if a selected game is missing.
+    """
+    team_stats = defaultdict(float)
+    for player in team:
+        num_games = random.randint(3, 4)
+        for _ in range(num_games):
+            game_stats = None
+            # This loop ensures we always find a game for the player,
+            # assuming they have at least one game in their history.
+            while not game_stats:
+                game_stats = get_random_game_stats(player.id, player_games)
 
-def play_matchup(team_a, team_b, elo_data, player_games):
-    """Simulates a matchup between two teams, determines category winners, and updates ELOs."""
-    team_a_stats = aggregate_team_stats(team_a, player_games)
-    team_b_stats = aggregate_team_stats(team_b, player_games)
+            
+            for stat, value in game_stats.items():
+                team_stats[stat] += value
+    
+    team_stats['fg_pct'] = team_stats['fgm'] / team_stats['fga'] if team_stats['fga'] else 0
+    team_stats['ft_pct'] = team_stats['ftm'] / team_stats['fta'] if team_stats['fta'] else 0
+    return team_stats
+
+def play_matchup(team_a, team_b, elo_data, player_games, guaranteed_games=False):
+    """
+    Simulates a matchup between two teams, determines category winners, and updates ELOs.
+    Can use either standard or guaranteed stat aggregation.
+    """
+    if guaranteed_games:
+        team_a_stats = aggregate_team_stats_guaranteed(team_a, player_games)
+        team_b_stats = aggregate_team_stats_guaranteed(team_b, player_games)
+    else:
+        team_a_stats = aggregate_team_stats(team_a, player_games)
+        team_b_stats = aggregate_team_stats(team_b, player_games)
 
     team_a_score = 0
     team_b_score = 0
@@ -116,7 +148,6 @@ def play_matchup(team_a, team_b, elo_data, player_games):
         val_a = team_a_stats[cat_name]
         val_b = team_b_stats[cat_name]
         
-        # For turnovers, a lower score is better
         is_turnover_cat = (cat_name == 'to')
         
         winner, loser = (None, None)
@@ -170,7 +201,6 @@ def run_simulations():
 
                 # Run a smaller number of simulations for this culling cycle
                 for i in range(CULLING_SIMULATIONS_PER_CYCLE):
-                    # Sort players for drafting in each simulation
                     available_players = sorted(
                         players_with_games, 
                         key=lambda p: elo_data.get(p.id, {}).get('overall_elo', INITIAL_ELO),
@@ -189,68 +219,98 @@ def run_simulations():
                         play_matchup(team_a, team_b, elo_data, player_games)
 
                 # Identify and drop the lowest-ranked players
-                logger.info("Culling cycle complete. Dropping lowest-ranked players...")
+                logger.info("Culling cycle complete. Identifying lowest-ranked players...")
                 sorted_by_elo = sorted(players_with_games, key=lambda p: elo_data[p.id]['overall_elo'])
                 
                 num_to_drop = min(PLAYERS_TO_DROP_PER_CYCLE, current_player_count - TARGET_PLAYER_COUNT)
                 if num_to_drop <= 0: break
 
+                ### CHANGE: Identify and list the players being culled.
+                players_to_drop = sorted_by_elo[:num_to_drop]
+                logger.info(f"--- Dropping {len(players_to_drop)} Players ---")
+                for p in players_to_drop:
+                    player_elo = elo_data[p.id]['overall_elo']
+                    logger.info(f"  - {p.name} (Elo: {player_elo:.2f})")
+
                 players_with_games = sorted_by_elo[num_to_drop:]
-                # dropped_players = sorted_by_elo[]
-                logger.info(f"Dropped {num_to_drop} players. {len(players_with_games)} players remaining.")
+                logger.info(f"{len(players_with_games)} players remaining.")
 
-        # --- Final Simulation Run ---
-        logger.info(f"\n--- Culling complete. Starting final simulation with {len(players_with_games)} players. ---")
-
+        # --- Final Simulation Runs ---
+        logger.info(f"\n--- Culling complete. Final player pool size: {len(players_with_games)} ---")
         player_games = {p.id: p.game_stats for p in players_with_games}
-
-        # Reset ELO ratings for the final group of players before the main simulation
-        logger.info("Resetting ELO ratings for final run...")
-        elo_data = {}
+        
+        ### CHANGE: Run the main simulation twice.
+        
+        # --- Run 1: Standard Simulation ---
+        logger.info("\n--- Starting Final Simulation (Standard Model) ---")
+        elo_data_standard = {}
         for player in players_with_games:
-            elo_data[player.id] = {key: INITIAL_ELO for key in CATEGORIES.values()}
-            elo_data[player.id]['overall_elo'] = INITIAL_ELO
+            elo_data_standard[player.id] = {key: INITIAL_ELO for key in CATEGORIES.values()}
+            elo_data_standard[player.id]['overall_elo'] = INITIAL_ELO
 
-        # --- Main Simulation Loop ---
         for i in range(NUM_SIMULATIONS):
-            logger.info(f"Running simulation {i + 1}/{NUM_SIMULATIONS}...")
-            
-            # Sort players by overall ELO for drafting
+            if (i + 1) % 1000 == 0:
+                logger.info(f"Running Standard Simulation {i + 1}/{NUM_SIMULATIONS}...")
             available_players = sorted(
                 players_with_games, 
-                key=lambda p: elo_data.get(p.id, {}).get('overall_elo', INITIAL_ELO),
+                key=lambda p: elo_data_standard.get(p.id, {}).get('overall_elo', INITIAL_ELO),
                 reverse=True
             )
-            
-            # --- Draft teams using a snake draft for fairness ---
             teams = [[] for _ in range(NUM_TEAMS)]
             for round_num in range(TEAM_SIZE):
-                # Reverse team order for even-numbered rounds (snake draft)
                 team_order = range(NUM_TEAMS) if round_num % 2 == 0 else reversed(range(NUM_TEAMS))
-                
                 for team_idx in team_order:
                     if available_players:
-                        player_to_draft = available_players.pop(0) # Best available player
-                        teams[team_idx].append(player_to_draft)
-
-            # Play a full round-robin set of matchups
+                        teams[team_idx].append(available_players.pop(0))
             matchups = itertools.combinations(teams, 2)
             for team_a, team_b in matchups:
-                play_matchup(team_a, team_b, elo_data, player_games)
+                play_matchup(team_a, team_b, elo_data_standard, player_games, guaranteed_games=False)
+        
+        # --- Run 2: Guaranteed Games Simulation ---
+        logger.info("\n--- Starting Final Simulation (Guaranteed Games Model) ---")
+        elo_data_guaranteed = {}
+        for player in players_with_games:
+            elo_data_guaranteed[player.id] = {key: INITIAL_ELO for key in CATEGORIES.values()}
+            elo_data_guaranteed[player.id]['overall_elo'] = INITIAL_ELO
+        
+        for i in range(NUM_SIMULATIONS):
+            if (i + 1) % 1000 == 0:
+                logger.info(f"Running Guaranteed Simulation {i + 1}/{NUM_SIMULATIONS}...")
+            available_players = sorted(
+                players_with_games, 
+                key=lambda p: elo_data_guaranteed.get(p.id, {}).get('overall_elo', INITIAL_ELO),
+                reverse=True
+            )
+            teams = [[] for _ in range(NUM_TEAMS)]
+            for round_num in range(TEAM_SIZE):
+                team_order = range(NUM_TEAMS) if round_num % 2 == 0 else reversed(range(NUM_TEAMS))
+                for team_idx in team_order:
+                    if available_players:
+                        teams[team_idx].append(available_players.pop(0))
+            matchups = itertools.combinations(teams, 2)
+            for team_a, team_b in matchups:
+                play_matchup(team_a, team_b, elo_data_guaranteed, player_games, guaranteed_games=True)
 
         # --- Update Database After All Simulations ---
-        logger.info("\nAll simulations complete. Updating the database...")
+        logger.info("\nAll simulations complete. Updating the database with both sets of ratings...")
         
-        # Note: This will only update the players who made it through the culling process
-        for player_id, ratings in elo_data.items():
+        final_player_ids = elo_data_standard.keys()
+        for player_id in final_player_ids:
             elo_record = db.query(EloStats).filter(EloStats.player_id == player_id).first()
             if not elo_record:
                 elo_record = EloStats(player_id=player_id)
                 db.add(elo_record)
             
-            # Assign updated values
-            for key, value in ratings.items():
+            # Assign updated values from the standard simulation
+            standard_ratings = elo_data_standard[player_id]
+            for key, value in standard_ratings.items():
                 setattr(elo_record, key, value)
+                
+            # Assign updated values from the guaranteed games simulation
+            guaranteed_ratings = elo_data_guaranteed[player_id]
+            for key, value in guaranteed_ratings.items():
+                ### CHANGE: Save to new DB columns with a '_guaranteed' suffix
+                setattr(elo_record, key + '_guaranteed', value)
 
         # Update simulation count
         sim_info = db.query(SimulationInfo).first()
@@ -268,4 +328,3 @@ def run_simulations():
 
 if __name__ == "__main__":
     run_simulations()
-
