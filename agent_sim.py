@@ -160,6 +160,47 @@ class BalancedBuildAgent(Agent):
         # Find the player who is best in that specific weakest category
         return max(available_players, key=lambda p: getattr(p.elo_stats, weakest_category))
 
+class PuntAndAdaptAgent(Agent):
+    """Permanently punts one category and adaptively punts a second after 3 rounds."""
+    def __init__(self, agent_id, name, strategy_description, permanent_punt_category):
+        super().__init__(agent_id, name, strategy_description)
+        self.permanent_punt_category = permanent_punt_category
+        self.adaptive_punt_category = None
+        # Elos used before the adaptive punt is determined
+        self.initial_relevant_elos = [k for k in ELO_KEYS if k != self.permanent_punt_category]
+
+    def select_player(self, available_players):
+        if len(self.team) < 3: # Rounds 1-3
+            # Draft based on initial punt
+            return max(available_players, key=lambda p: sum(getattr(p.elo_stats, key) for key in self.initial_relevant_elos))
+        else: # Round 4 onwards
+            if not self.adaptive_punt_category:
+                self._determine_adaptive_punt()
+            
+            # Draft based on both punts
+            relevant_elos = [k for k in self.initial_relevant_elos if k != self.adaptive_punt_category]
+            return max(available_players, key=lambda p: sum(getattr(p.elo_stats, key) for key in relevant_elos))
+
+    def _determine_adaptive_punt(self):
+        team_cat_elos = defaultdict(float)
+        for player in self.team:
+            # We only care about the categories we are not already punting
+            for key in self.initial_relevant_elos:
+                team_cat_elos[key] += getattr(player.elo_stats, key)
+        
+        # Determine the weakest category from the remaining ones
+        # We also don't adaptively punt 'to_elo' if it wasn't the permanent one
+        possible_punts = [k for k in self.initial_relevant_elos if k != 'to_elo']
+        if not possible_punts: # Edge case if only 'to_elo' was left
+            self.adaptive_punt_category = self.initial_relevant_elos[0] if self.initial_relevant_elos else None
+        else:
+            self.adaptive_punt_category = min(possible_punts, key=lambda k: team_cat_elos[k])
+        logger.debug(f"{self.name} adaptively punted '{self.adaptive_punt_category}'.")
+
+    def reset(self):
+        super().reset()
+        self.adaptive_punt_category = None
+
 # --- Main Simulation Orchestration ---
 
 def run_draft_simulations():
@@ -180,16 +221,16 @@ def run_draft_simulations():
 
         # --- Initialize Agents ---
         agents = [
-            BestPlayerAgent(1, "BPA Agent", "Picks best player available by overall_elo"),
-            PuntCategoryAgent(2, "Punt FT% Agent", "Ignores ft_pct_elo", ['ft_pct_elo']),
-            AdaptivePuntAgent(3, "Adaptive Punt Agent", "BPA for 3 rounds, then punts worst category"),
-            PuntCategoryAgent(4, "Punt Points Agent", "Ignores pts_elo", ['pts_elo']),
-            PuntCategoryAgent(5, "Punt Assists Agent", "Ignores ast_elo", ['ast_elo']),
-            PuntCategoryAgent(6, "Punt Turnovers Agent", "Ignores to_elo", ['to_elo']),
-            BuildFocusAgent(7, "Big Man Build", "Focuses on REB, BLK, FG%", ['reb_elo', 'blk_elo', 'fg_pct_elo']),
-            BuildFocusAgent(8, "Guard Build", "Focuses on PTS, AST, STL, TPM, FT%", ['pts_elo', 'ast_elo', 'stl_elo', 'tpm_elo', 'ft_pct_elo']),
-            BalancedBuildAgent(9, "Balanced Agent", "Drafts to fix weakest category"),
-            PuntCategoryAgent(10, "Punt FG%/REB Agent", "Ignores fg_pct_elo and reb_elo", ['fg_pct_elo', 'reb_elo']),
+            BestPlayerAgent(1, "BPA Agent 1", "Picks best player available by overall_elo"),
+            BestPlayerAgent(2, "BPA Agent 2", "Picks best player available by overall_elo"),
+            BestPlayerAgent(3, "BPA Agent 3", "Picks best player available by overall_elo"),
+            BestPlayerAgent(4, "BPA Agent 4", "Picks best player available by overall_elo"),
+            BestPlayerAgent(5, "BPA Agent 5", "Picks best player available by overall_elo"),
+            PuntCategoryAgent(6, "Punt TO Agent 1", "Ignores to_elo", ['to_elo']),
+            AdaptivePuntAgent(7, "Adaptive Punt Agent", "BPA for 3 rounds, then punts worst category"),
+            PuntCategoryAgent(8, "Casper Agent", "Only uses pts, reb, ast, stl, blk, tpm", ['fg_pct_elo', 'ft_pct_elo', 'to_elo']),
+            PuntAndAdaptAgent(9, "Punt TO & Adapt", "Punts TO and adaptively punts a second", permanent_punt_category='to_elo'),
+            PuntCategoryAgent(10, "Punt TO Agent 2", "Ignores to_elo", ['to_elo']),
         ]
 
         # --- Main Simulation Loop ---
@@ -248,3 +289,4 @@ def run_draft_simulations():
 
 if __name__ == "__main__":
     run_draft_simulations()
+
