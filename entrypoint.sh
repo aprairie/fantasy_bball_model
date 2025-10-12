@@ -13,7 +13,10 @@ python database.py
 # echo "Starting scraper"
 # python scraper.py
 
+# echo "Starting model"
+# python model.py
+
 echo "Starting model"
-python model.py
+python agent_sim.py
 
 echo "Scraping completed. Container will exit."
