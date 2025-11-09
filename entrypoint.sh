@@ -13,10 +13,13 @@ python database.py
 # echo "Starting scraper"
 # python scraper.py
 
-echo "Starting model"
-python model.py
+# echo "Starting model"
+# python model.py
 
 # echo "Starting model"
 # python agent_sim.py
+
+echo "Dump to csv"
+python dump_to_csv.py
 
 echo "Scraping completed. Container will exit."
