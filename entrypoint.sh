@@ -25,10 +25,13 @@ python database.py
 # echo "Dumping to csv"
 # python dump_to_csv.py
 
-echo "Calculating Fantasy Value, must be done post-scraping"
-python calculate_fantasy_value.py
+# echo "Calculating Fantasy Value, must be done post-scraping"
+# python calculate_fantasy_value.py
 
 # echo "Dumping Player Values to csv"
 # python dump_player_values_to_csv.py
+
+echo "Printing Player availabilities"
+python print_availability_main.py
 
 echo "Processing completed. Container will exit."
