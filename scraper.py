@@ -216,7 +216,7 @@ class BasketballScraper:
 
 def main():
     scraper = BasketballScraper()
-    years = [2023, 2024, 2025]
+    years = [2026, 2025, 2024, 2023]
     
     for year in years:
         logger.info(f"Starting scrape for {year} season...")

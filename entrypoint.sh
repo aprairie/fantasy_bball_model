@@ -13,13 +13,22 @@ python database.py
 # echo "Starting scraper"
 # python scraper.py
 
+# echo "Starting birthday scraper"
+# python birthday_scraper.py
+
 # echo "Starting model"
 # python model.py
 
-# echo "Starting model"
+# echo "Starting agent sim"
 # python agent_sim.py
 
-echo "Dump to csv"
-python dump_to_csv.py
+# echo "Dumping to csv"
+# python dump_to_csv.py
 
-echo "Scraping completed. Container will exit."
+echo "Calculating Fantasy Value, must be done post-scraping"
+python calculate_fantasy_value.py
+
+# echo "Dumping Player Values to csv"
+# python dump_player_values_to_csv.py
+
+echo "Processing completed. Container will exit."

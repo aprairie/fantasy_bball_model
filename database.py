@@ -1,6 +1,5 @@
 from sqlalchemy import create_engine, Boolean, Column, Integer, String, Float, ForeignKey, DateTime, Date
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import sessionmaker, relationship, declarative_base
 from datetime import datetime
 import os
 
@@ -19,11 +18,15 @@ class Player(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True, nullable=False)
     player_id = Column(String, unique=True, index=True)  # Basketball Reference ID
+    birth_date = Column(Date, nullable=True) 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     game_stats = relationship("GameStats", back_populates="player")
     elo_stats = relationship("EloStats", back_populates="player", uselist=False) # One-to-one
+    
+    # --- ADD THIS RELATIONSHIP ---
+    season_values = relationship("PlayerSeasonValue", back_populates="player")
 
 class GameStats(Base):
     __tablename__ = "game_stats"
@@ -106,6 +109,40 @@ class SimulationInfo(Base):
     __tablename__ = "simulation_info"
     id = Column(Integer, primary_key=True, index=True)
     simulation_count = Column(Integer, default=0, nullable=False)
+
+
+# --- ADD THIS NEW TABLE ---
+
+class PlayerSeasonValue(Base):
+    """
+    Stores a player's standardized fantasy value for a specific season.
+    The primary key is a combination of player_id and season.
+    """
+    __tablename__ = "player_season_values"
+    
+    # --- Composite Primary Key ---
+    player_id = Column(Integer, ForeignKey("players.id"), primary_key=True)
+    season = Column(Integer, primary_key=True, index=True) # e.g., 2024 for 2023-24 season
+
+    # --- Standardized 9-Cat Scores (out of 100) ---
+    pts_score = Column(Float, nullable=False, default=0)
+    reb_score = Column(Float, nullable=False, default=0)
+    ast_score = Column(Float, nullable=False, default=0)
+    stl_score = Column(Float, nullable=False, default=0)
+    blk_score = Column(Float, nullable=False, default=0)
+    tpm_score = Column(Float, nullable=False, default=0) # 3-pointers made
+    fg_pct_score = Column(Float, nullable=False, default=0)
+    ft_pct_score = Column(Float, nullable=False, default=0)
+    to_score = Column(Float, nullable=False, default=0)   # Turnovers (likely inverted)
+    
+    # --- Overall Value ---
+    total_score = Column(Float, nullable=False, default=0, index=True)
+    
+    # --- Likelihood to Play ---
+    play_likelihood = Column(Float, nullable=False, default=0.0) # Stored as 0.0 to 1.0
+
+    # --- Relationship ---
+    player = relationship("Player", back_populates="season_values")
 
 
 def init_db():
