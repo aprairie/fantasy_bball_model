@@ -31,7 +31,10 @@ python database.py
 # echo "Dumping Player Values to csv"
 # python dump_player_values_to_csv.py
 
-echo "Printing Player availabilities"
-python print_availability_main.py
+# echo "Printing Player availabilities"
+# python print_availability_main.py
+
+echo "Trial run of player sampled games"
+python trial_run_game_samples.py
 
 echo "Processing completed. Container will exit."
