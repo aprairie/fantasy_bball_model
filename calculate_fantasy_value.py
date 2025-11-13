@@ -4,6 +4,7 @@ from sqlalchemy import func, select, exc
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from datetime import datetime
 import time
+from typing import List, Dict, Tuple
 
 # Import models from database.py
 from database import (
@@ -14,21 +15,36 @@ from database import (
     PlayerSeasonValue
 )
 
+# Import from our simulation library
+from game_picker_lib import generate_weighted_game_samples
+
+
 # --- SCRIPT CONFIGURATION ---
-# The season to use for calculating the averages (a full, complete season)
+
+# 1. Benchmark Configuration
+# The season used to establish the "average" baseline (1.0 z-score)
 BENCHMARK_SEASON = 2025 
-# The season to apply the averages to (the new/current season)
+
+# 2. "Normal" Calculation Configuration
+# The actual current season to calculate real-world stats for
 CALCULATION_SEASON = 2026
+
+# 3. "Simulated" Calculation Configuration
+# The special season ID to store simulated aggregate stats under
+SIMULATED_SEASON_ID = 1
+# Weights for generating the simulated stats
+SIM_YEAR_WEIGHTS = [(2026, 0.6), (2025, 0.2), (2024, 0.1)]
+# Number of "healthy" games to simulate per player
+NUM_SIM_GAMES = 10000
 
 MIN_GAMES_PLAYED = 1 
 FG_BENCHMARK = 0.48
 FT_BENCHMARK = 0.81
-# The number of players to use for the "benchmark" cohort
 TOP_N_PLAYERS = 200
 
 def get_season_stats(db: Session, season: int):
     """
-    Fetches and aggregates all player stats for the given season.
+    Fetches and aggregates all player stats for a specific real season.
     """
     print(f"Querying aggregated season stats for {season}...")
     
@@ -78,18 +94,96 @@ def get_season_stats(db: Session, season: int):
     print(f"Found {len(stats_dict)} players with > {MIN_GAMES_PLAYED} games.")
     return stats_dict
 
+
+def get_simulated_stats(db: Session, 
+                        year_weights: List[Tuple[int, float]], 
+                        num_games: int) -> Dict[int, dict]:
+    """
+    Generates weighted, simulated stats for ALL players.
+    """
+    print(f"\n--- Generating {num_games} simulated games per player ---")
+    print(f"Using weights: {year_weights}")
+    
+    try:
+        all_players = db.query(Player.id, Player.player_id).all()
+        string_to_int_map = {p.player_id: p.id for p in all_players}
+        player_ids_to_sim = list(string_to_int_map.keys())
+    except Exception as e:
+        print(f"Error querying players: {e}")
+        return {}
+        
+    print(f"Found {len(player_ids_to_sim)} total players to simulate.")
+
+    # Call library function with include_dummy_games=False for "healthy" stats
+    sim_results = generate_weighted_game_samples(
+        session=db,
+        player_ids=player_ids_to_sim,
+        num_games=num_games,
+        year_weights=year_weights,
+        availability_predictions={}, 
+        include_dummy_games=False 
+    )
+    
+    stats_dict = {}
+    for string_pid, game_list in sim_results.items():
+        int_pid = string_to_int_map.get(string_pid)
+        if not int_pid:
+            continue
+            
+        played_games = [g for g in game_list if g.minutes_played not in (None, "", "00:00")]
+        
+        if not played_games:
+            avg_pts, avg_reb, avg_ast, avg_stl, avg_blk, avg_tpm, avg_to = 0,0,0,0,0,0,0
+            total_fga, total_fgm, total_fta, total_ftm = 0,0,0,0
+            games_played = 0
+        else:
+            games_played = len(played_games) 
+            avg_pts = float(np.mean([g.points for g in played_games]))
+            avg_reb = float(np.mean([g.total_rebounds for g in played_games]))
+            avg_ast = float(np.mean([g.assists for g in played_games]))
+            avg_stl = float(np.mean([g.steals for g in played_games]))
+            avg_blk = float(np.mean([g.blocks for g in played_games]))
+            avg_tpm = float(np.mean([g.three_pointers for g in played_games]))
+            avg_to = float(np.mean([g.turnovers for g in played_games]))
+            
+            total_fga = float(np.sum([g.field_goal_attempts for g in played_games]))
+            total_fgm = float(np.sum([g.field_goals for g in played_games]))
+            total_fta = float(np.sum([g.free_throw_attempts for g in played_games]))
+            total_ftm = float(np.sum([g.free_throws for g in played_games]))
+
+        stats_dict[int_pid] = {
+            'games_played': games_played,
+            'avg_pts': avg_pts,
+            'avg_reb': avg_reb,
+            'avg_ast': avg_ast,
+            'avg_stl': avg_stl,
+            'avg_blk': avg_blk,
+            'avg_tpm': avg_tpm,
+            'avg_to': avg_to,
+            'total_fga': total_fga,
+            'total_fgm': total_fgm,
+            'total_fta': total_fta,
+            'total_ftm': total_ftm,
+        }
+        
+    print(f"Successfully aggregated simulated stats for {len(stats_dict)} players.")
+    return stats_dict
+
+
 def calculate_impact_stats(all_player_stats: dict):
-    """
-    Calculates and adds the FG% and FT% "impact" stats to each player's dict.
-    """
+    """Calculates and adds the FG% and FT% "impact" stats."""
     for player_id, stats in all_player_stats.items():
+        games_played = stats['games_played']
+        if games_played == 0:
+            games_played = 1
+            
         if stats['total_fga'] > 0:
-            fg_impact = (stats['total_fgm'] - (stats['total_fga'] * FG_BENCHMARK)) / stats['games_played']
+            fg_impact = (stats['total_fgm'] - (stats['total_fga'] * FG_BENCHMARK)) / games_played
         else:
             fg_impact = 0.0
             
         if stats['total_fta'] > 0:
-            ft_impact = (stats['total_ftm'] - (stats['total_fta'] * FT_BENCHMARK)) / stats['games_played']
+            ft_impact = (stats['total_ftm'] - (stats['total_fta'] * FT_BENCHMARK)) / games_played
         else:
             ft_impact = 0.0
             
@@ -97,11 +191,7 @@ def calculate_impact_stats(all_player_stats: dict):
         stats['ft_impact'] = ft_impact
 
 def get_benchmarks(player_stats_cohort: list):
-    """
-    Calculates the average (mean) for each stat category from a given list
-    of player stats.
-    """
-    # np.finfo(float).eps is a tiny number to prevent divide-by-zero errors
+    """Calculates the average (mean) for each stat category."""
     benchmarks = {
         'pts': np.mean([s['avg_pts'] for s in player_stats_cohort]) + np.finfo(float).eps,
         'reb': np.mean([s['avg_reb'] for s in player_stats_cohort]) + np.finfo(float).eps,
@@ -114,6 +204,7 @@ def get_benchmarks(player_stats_cohort: list):
         'ft_impact': np.mean([s['ft_impact'] for s in player_stats_cohort]),
     }
     return benchmarks
+
 
 def calculate_normalized_scores(player_stats_dict: dict, benchmarks: dict, target_std_dev: float, impact_means: dict, impact_std_devs: dict):
     """
@@ -155,27 +246,28 @@ def calculate_normalized_scores(player_stats_dict: dict, benchmarks: dict, targe
             'ft_pct_score': ft_pct_score,
             'to_score': to_score,
             'total_score': total_score,
-            'play_likelihood': stats['games_played'] / 82.0
+            'play_likelihood': 0.0 # To be populated by run_predictions.py
         }
     return final_scores
 
-def upsert_season_values(db: Session, values_to_upsert: list):
+def upsert_season_values(db: Session, values_to_upsert: list, target_season: int):
     """
-    Efficiently inserts or updates all PlayerSeasonValue records.
+    Efficiently inserts or updates PlayerSeasonValue records for a SPECIFIC season.
     """
     if not values_to_upsert:
-        print("No values to upsert.")
+        print(f"No values to upsert for season {target_season}.")
         return
         
-    print(f"Upserting {len(values_to_upsert)} records for season {CALCULATION_SEASON}...")
+    print(f"Upserting {len(values_to_upsert)} records for season {target_season}...")
     
     table = PlayerSeasonValue.__table__
     stmt = pg_insert(table).values(values_to_upsert)
     
+    # Do not update 'play_likelihood' as it's set by the other script
     update_columns = {
         col.name: col
         for col in stmt.excluded
-        if not col.primary_key
+        if not col.primary_key and col.name != 'play_likelihood'
     }
     
     upsert_stmt = stmt.on_conflict_do_update(
@@ -186,138 +278,126 @@ def upsert_season_values(db: Session, values_to_upsert: list):
     try:
         db.execute(upsert_stmt)
         db.commit()
-        print(f"Successfully upserted {len(values_to_upsert)} records.")
+        print(f"Successfully upserted records for season {target_season}.")
     except exc.SQLAlchemyError as e:
         print(f"[!!!] Database upsert failed: {e}")
         db.rollback()
         print("--- Rolled back changes. ---")
 
+
 def main():
-    print(f"--- Starting Player Season Value Calculation ---")
-    print(f"Benchmark Season: {BENCHMARK_SEASON} (for averages)")
-    print(f"Calculation Season: {CALCULATION_SEASON} (for final scores)")
+    print(f"--- Starting Player Value Calculation ---")
     start_time = time.time()
     db: Session = SessionLocal()
     
     try:
-        # --- PASS 1: Calculate Benchmarks from BENCHMARK_SEASON ---
+        # ==================================================================
+        # PASS 1: CALCULATE BENCHMARKS
+        # We use BENCHMARK_SEASON (e.g., 2025) to establish what "Average" looks like.
+        # ==================================================================
         print(f"\n--- Pass 1: Analyzing Benchmark Season {BENCHMARK_SEASON} ---")
         
-        # 1. Get all stats for the benchmark season
         benchmark_stats_all = get_season_stats(db, BENCHMARK_SEASON)
         if not benchmark_stats_all:
-            print(f"No stats found for benchmark season {BENCHMARK_SEASON}. Exiting.")
+            print(f"No stats found for benchmark season. Exiting.")
             return
             
-        # 2. Calculate impact stats for all players
         calculate_impact_stats(benchmark_stats_all)
-        
-        # 3. Get provisional benchmarks using ALL players to find the top 200
         provisional_benchmarks = get_benchmarks(list(benchmark_stats_all.values()))
         
-        # 4. Calculate provisional scores
-        # We use placeholder std dev (1.0) and means (0) for this first pass
-        # The goal is just to rank players, not get final scores
-        provisional_std_devs = {'fg': 1.0, 'ft': 1.0}
-        provisional_means = {'fg': 0.0, 'ft': 0.0}
-        
+        # Find Top 200 to create a "Standard League" baseline
         provisional_scores = calculate_normalized_scores(
-            benchmark_stats_all, 
-            provisional_benchmarks, 
-            1.0, 
-            provisional_means,
-            provisional_std_devs
+            benchmark_stats_all, provisional_benchmarks, 1.0, 
+            {'fg': 0.0, 'ft': 0.0}, {'fg': 1.0, 'ft': 1.0}
         )
         
-        # 5. Sort by provisional total_score to find the Top N
         sorted_players = sorted(
             provisional_scores.items(), 
             key=lambda item: item[1]['total_score'], 
             reverse=True
         )
+        top_n_ids = {pid for pid, score in sorted_players[:TOP_N_PLAYERS]}
         
-        top_n_player_ids = {pid for pid, score in sorted_players[:TOP_N_PLAYERS]}
-        
-        # 6. Create the final cohort of stats from only these Top N players
-        final_benchmark_cohort_stats = [
-            stats for pid, stats in benchmark_stats_all.items() 
-            if pid in top_n_player_ids
+        final_cohort_stats = [
+            stats for pid, stats in benchmark_stats_all.items() if pid in top_n_ids
         ]
         
-        if not final_benchmark_cohort_stats:
-            print("Error: Could not create final benchmark cohort. Exiting.")
+        if not final_cohort_stats:
+            print("Error creating benchmark cohort.")
             return
 
-        print(f"Identified Top {len(final_benchmark_cohort_stats)} players from {BENCHMARK_SEASON} by value.")
-
-        # 7. Calculate FINAL benchmarks using this Top N cohort
-        print("Calculating final benchmarks from Top N cohort...")
-        final_benchmarks = get_benchmarks(final_benchmark_cohort_stats)
+        # Calculate Final Benchmarks and Variances
+        final_benchmarks = get_benchmarks(final_cohort_stats)
         
-        print("--- Final Benchmark Averages (Top 200) ---")
-        for k, v in final_benchmarks.items():
-            print(f"{k.upper()}: {v:.4f}")
-        print("------------------------------------------")
-
-        # 8. Calculate variance targets based on this Top N cohort
-        # This is the "target standard deviation" for FG% and FT%
-        pts_scores_from_cohort = [
-            (s['avg_pts'] / final_benchmarks['pts']) * 100 
-            for s in final_benchmark_cohort_stats
-        ]
-        target_std_dev = np.std(pts_scores_from_cohort)
+        pts_scores_cohort = [(s['avg_pts']/final_benchmarks['pts'])*100 for s in final_cohort_stats]
+        target_std_dev = np.std(pts_scores_cohort)
         
-        # We also need the mean and std_dev of the impact stats FROM THE COHORT
-        # to use for Z-scoring
-        fg_impacts_from_cohort = [s['fg_impact'] for s in final_benchmark_cohort_stats]
-        ft_impacts_from_cohort = [s['ft_impact'] for s in final_benchmark_cohort_stats]
+        fg_imp = [s['fg_impact'] for s in final_cohort_stats]
+        ft_imp = [s['ft_impact'] for s in final_cohort_stats]
         
-        impact_means = {
-            'fg': np.mean(fg_impacts_from_cohort),
-            'ft': np.mean(ft_impacts_from_cohort)
-        }
+        impact_means = {'fg': np.mean(fg_imp), 'ft': np.mean(ft_imp)}
         impact_std_devs = {
-            'fg': np.std(fg_impacts_from_cohort) + np.finfo(float).eps,
-            'ft': np.std(ft_impacts_from_cohort) + np.finfo(float).eps
+            'fg': np.std(fg_imp) + np.finfo(float).eps,
+            'ft': np.std(ft_imp) + np.finfo(float).eps
         }
         
-        print(f"Target variance (std dev of PTS_SCORE): {target_std_dev:.4f}")
-        print("--- Pass 1 Complete ---")
-        
-        # --- PASS 2: Calculate Scores for CALCULATION_SEASON ---
-        print(f"\n--- Pass 2: Calculating Scores for {CALCULATION_SEASON} ---")
-        
-        # 1. Get stats for the calculation season
-        calculation_stats = get_season_stats(db, CALCULATION_SEASON)
-        if not calculation_stats:
-            print(f"No stats found for calculation season {CALCULATION_SEASON}. Exiting.")
-            return
+        print(f"Benchmarks calculated. StdDev Target: {target_std_dev:.4f}")
 
-        # 2. Calculate impact stats
-        calculate_impact_stats(calculation_stats)
+
+        # ==================================================================
+        # PASS 2: CALCULATE REAL SEASON STATS (Normal)
+        # Calculate scores for the current actual season (e.g., 2026)
+        # ==================================================================
+        print(f"\n--- Pass 2: Calculating Normal Scores for {CALCULATION_SEASON} ---")
         
-        # 3. Calculate final scores using benchmarks from Pass 1
-        print("Calculating final normalized scores...")
-        final_scores_dict = calculate_normalized_scores(
-            calculation_stats,
-            final_benchmarks,
-            target_std_dev,
-            impact_means,
-            impact_std_devs
-        )
+        normal_stats = get_season_stats(db, CALCULATION_SEASON)
         
-        # 4. Format for database upsert
-        values_to_upsert = []
-        for player_id, scores in final_scores_dict.items():
-            db_row = {
-                'player_id': player_id,
-                'season': CALCULATION_SEASON,
-                **scores  # Unpack all the calculated score key/value pairs
-            }
-            values_to_upsert.append(db_row)
+        if normal_stats:
+            calculate_impact_stats(normal_stats)
+            
+            normal_scores = calculate_normalized_scores(
+                normal_stats, final_benchmarks, target_std_dev, impact_means, impact_std_devs
+            )
+            
+            values_normal = []
+            for player_id, scores in normal_scores.items():
+                values_normal.append({
+                    'player_id': player_id,
+                    'season': CALCULATION_SEASON, # <--- Stored as 2026
+                    **scores
+                })
+            
+            upsert_season_values(db, values_normal, CALCULATION_SEASON)
+        else:
+            print(f"No data found for {CALCULATION_SEASON}, skipping normal calculation.")
+
+
+        # ==================================================================
+        # PASS 3: CALCULATE SIMULATED STATS (Aggregate)
+        # Calculate scores based on 1000 simulated "healthy" games
+        # ==================================================================
+        print(f"\n--- Pass 3: Calculating Simulated Scores for Season {SIMULATED_SEASON_ID} ---")
         
-        # 5. Upsert data into the database
-        upsert_season_values(db, values_to_upsert)
+        sim_stats = get_simulated_stats(db, SIM_YEAR_WEIGHTS, NUM_SIM_GAMES)
+        
+        if sim_stats:
+            calculate_impact_stats(sim_stats)
+            
+            sim_scores = calculate_normalized_scores(
+                sim_stats, final_benchmarks, target_std_dev, impact_means, impact_std_devs
+            )
+            
+            values_sim = []
+            for player_id, scores in sim_scores.items():
+                values_sim.append({
+                    'player_id': player_id,
+                    'season': SIMULATED_SEASON_ID, # <--- Stored as 1
+                    **scores
+                })
+            
+            upsert_season_values(db, values_sim, SIMULATED_SEASON_ID)
+        else:
+            print("No simulated stats generated.")
         
     except Exception as e:
         print(f"An unexpected error occurred: {e}")

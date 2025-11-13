@@ -133,7 +133,6 @@ def predict_all_player_probabilities(
 
     return final_probabilities
 
-# --- NEW FUNCTION ---
 
 def _create_dummy_game() -> GameStats:
     """
@@ -156,26 +155,25 @@ def generate_weighted_game_samples(
     player_ids: List[str],
     num_games: int,
     year_weights: List[Tuple[int, float]],
-    availability_predictions: Dict[str, float]
+    availability_predictions: Dict[str, float],
+    include_dummy_games: bool = True
 ) -> Dict[str, List[GameStats]]:
     """
     Generates a weighted, random sample of past games for a list of players.
 
-    This function factors in:
-    1. Per-game weighting from 'year_weights'.
-    2. Availability predictions to randomly return "dummy" 0-stat games.
-    
     Args:
         session: The active SQLAlchemy session.
         player_ids: A list of STRING player_ids (e.g., ['curryst01', ...]).
         num_games: The number of games to generate *per player*.
         year_weights: List of (season, weight) tuples.
-        availability_predictions: Dict of {player_id: probability} from
-                                  the predict_all_player_probabilities function.
+        availability_predictions: Dict of {player_id: probability}. Only
+                                  used if include_dummy_games is True.
+        include_dummy_games (bool): If True, factors in availability_predictions
+                                    to randomly return dummy games.
+                                    If False, only returns real played games.
 
     Returns:
         A dictionary mapping {player_id: [list of GameStats objects]}.
-        The list will contain 'num_games' objects for each player.
     """
     
     seasons_to_query = [season for season, weight in year_weights]
@@ -231,14 +229,13 @@ def generate_weighted_game_samples(
         pool = player_game_pools.get(player_id)
 
         for _ in range(num_games):
-            # Step A: Check if the player is "available"
-            if random.random() > availability_prob:
+            # Step A: Check if we should generate a dummy game
+            if include_dummy_games and random.random() > availability_prob:
                 # UNAVAILABLE: Add a dummy game
                 final_samples[player_id].append(_create_dummy_game())
             else:
-                # AVAILABLE: Sample a real game
+                # AVAILABLE (or include_dummy_games is False): Sample a real game
                 if pool and pool['games']:
-                    # Use random.choices to pick 1 game, respecting weights
                     selected_game = random.choices(
                         pool['games'], 
                         weights=pool['weights'], 
@@ -246,8 +243,7 @@ def generate_weighted_game_samples(
                     )[0]
                     final_samples[player_id].append(selected_game)
                 else:
-                    # Available, but no historical games to sample from.
-                    # Treat as a DNP.
+                    # No historical games to sample from. Return a dummy game.
                     final_samples[player_id].append(_create_dummy_game())
                     
     return final_samples
