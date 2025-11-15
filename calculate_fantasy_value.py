@@ -33,7 +33,7 @@ CALCULATION_SEASON = 2026
 # The special season ID to store simulated aggregate stats under
 SIMULATED_SEASON_ID = 1
 # Weights for generating the simulated stats
-SIM_YEAR_WEIGHTS = [(2026, 0.6), (2025, 0.2), (2024, 0.1)]
+SIM_YEAR_WEIGHTS = [(2026, 1), (2025, 0.2), (2024, 0.1)]
 # Number of "healthy" games to simulate per player
 NUM_SIM_GAMES = 10000
 

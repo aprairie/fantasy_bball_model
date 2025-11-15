@@ -25,8 +25,8 @@ python database.py
 # echo "Dumping to csv"
 # python dump_to_csv.py
 
-echo "Calculating Fantasy Value, must be done post-scraping"
-python calculate_fantasy_value.py
+# echo "Calculating Fantasy Value, must be done post-scraping"
+# python calculate_fantasy_value.py
 
 # echo "Dumping Player Values to csv"
 # python dump_player_values_to_csv.py
@@ -36,5 +36,11 @@ python calculate_fantasy_value.py
 
 # echo "Trial run of player sampled games"
 # python trial_run_game_samples.py
+
+# echo "Trial run of teams and players"
+# python trial_run_teams_and_players.py
+
+echo "Trial run of Head to Head Matchups"
+python trial_run_head_to_head_matchups.py
 
 echo "Processing completed. Container will exit."
