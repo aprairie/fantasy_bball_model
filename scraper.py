@@ -65,7 +65,6 @@ class BasketballScraper:
         url = f"{self.base_url}/players/{player_id[0]}/{player_id}/gamelog/{year}"
         
         try:
-            logger.info(f"Scraping game log for {player_name} ({year})")
             response = requests.get(url, headers=self.headers)
             response.raise_for_status()
             soup = BeautifulSoup(response.content, 'html.parser')
@@ -161,7 +160,6 @@ class BasketballScraper:
                     logger.error(f"Error parsing game row for {player_name}: {e}")
                     continue
             
-            logger.info(f"Scraped {len(games_data)} games for {player_name}")
             return games_data
             
         except Exception as e:
@@ -171,8 +169,8 @@ class BasketballScraper:
     def save_to_database(self, player_info, games_data):
         """Save player and game data to PostgreSQL database"""
         db = SessionLocal()
+        new_games_added = 0  # CHANGED: Added a counter
         try:
-            # Check if player exists
             player = db.query(Player).filter_by(player_id=player_info['player_id']).first()
             
             if not player:
@@ -183,11 +181,9 @@ class BasketballScraper:
                 db.add(player)
                 db.commit()
                 db.refresh(player)
-                logger.info(f"Added new player: {player_info['name']}")
             
             # Add game stats
             for game_data in games_data:
-                # Check if this game already exists
                 existing_game = db.query(GameStats).filter_by(
                     player_id=player.id,
                     game_date=game_data['game_date']
@@ -204,24 +200,25 @@ class BasketballScraper:
                         **game_data
                     )
                     db.add(game_stats)
+                    new_games_added += 1
             
             db.commit()
-            logger.info(f"Saved {len(games_data)} games for {player_info['name']}")
             
         except Exception as e:
             db.rollback()
             logger.error(f"Error saving to database: {e}")
         finally:
             db.close()
+            
+        return new_games_added
 
 def main():
     scraper = BasketballScraper()
-    years = [2026]
+    years = [2022]
     
     for year in years:
         logger.info(f"Starting scrape for {year} season...")
         
-        # Get list of active players
         players = scraper.get_active_players(year)
         
         if not players:
@@ -230,9 +227,7 @@ def main():
         
         logger.info(f"Will scrape game logs for {len(players)} players")
         
-        # Scrape game logs for each player
         for i, player_info in enumerate(players, 1):
-            logger.info(f"Processing player {i}/{len(players)}: {player_info['name']}")
             
             games_data = scraper.scrape_player_game_log(
                 player_info['player_id'],
@@ -240,10 +235,16 @@ def main():
                 year
             )
             
-            if games_data:
-                scraper.save_to_database(player_info, games_data)
+            total_scraped_games = len(games_data)
+            new_games_saved = 0
             
-            # Be respectful to the server - add delay between requests
+            if games_data:
+                new_games_saved = scraper.save_to_database(player_info, games_data)
+            
+            logger.info(
+                f"{player_info['name']}, {i}/{len(players)}: "
+                f"Scraped {total_scraped_games} games. {new_games_saved} were new and saved to db."
+            )
             if i < len(players):
                 time.sleep(3)
     
