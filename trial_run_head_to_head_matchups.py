@@ -382,6 +382,7 @@ def run_league_simulation(
 
 
 # --- Trade Finder Function (MODIFIED per new logic) ---
+# --- Trade Finder Function (V6 - Verbose Output) ---
 
 def find_trades(
     n: int,
@@ -391,14 +392,16 @@ def find_trades(
     player_weekly_stats_map: Dict,
     all_team_weekly_stats: Dict,
     all_h2h_probs: Dict,
-    id_to_name_map: Dict
+    id_to_name_map: Dict,
+    team2_loss_tolerance: float = 0.0,
+    allow_trading_injured: bool = True  # <--- NEW PARAMETER
 ):
     """
-    Finds and ranks n-for-n trades where BOTH teams improve their
-    SUM of win% against all OTHER teams, in BOTH scenarios.
-    (This is the new Step 4)
+    Finds trades where Team 1 improves and Team 2's loss is within tolerance.
+    - allow_trading_injured=False will prevent INJ players from being proposed in trades.
     """
     print(f"\n--- Step 4: Finding best {n}-for-{n} trades for {team1_name} & {team2_name} ---")
+    print(f"Config: T2 Tolerance = -{team2_loss_tolerance} | Allow Injured Trades = {allow_trading_injured}")
     
     t1_full_roster_tuples = rosters_map[team1_name]
     t2_full_roster_tuples = rosters_map[team2_name]
@@ -407,166 +410,157 @@ def find_trades(
     team_names = sorted(list(rosters_map.keys()))
     other_team_names = [t for t in team_names if t not in [team1_name, team2_name]]
     
-    # 1. Calculate the baseline SUM of wins for T1 and T2 against all OTHER teams
-    baseline_win_sums = {}
-    for scenario in ["FullStrength", "Current"]:
-        t1_baseline_sum = sum(all_h2h_probs[(team1_name, other, scenario)]['overall'] for other in other_team_names)
-        t2_baseline_sum = sum(all_h2h_probs[(team2_name, other, scenario)]['overall'] for other in other_team_names)
-        baseline_win_sums[scenario] = {'t1': t1_baseline_sum, 't2': t2_baseline_sum}
-        
-    print(f"Baseline Win Sums ({team1_name} vs. rest): FS={baseline_win_sums['FullStrength']['t1']:.2f}, Current={baseline_win_sums['Current']['t1']:.2f}")
-    print(f"Baseline Win Sums ({team2_name} vs. rest): FS={baseline_win_sums['FullStrength']['t2']:.2f}, Current={baseline_win_sums['Current']['t2']:.2f}")
+    scenarios_to_check = ["FullStrength", "Current"]
 
-    # 2. Get all player combinations
-    # (We get combos for the 'FullStrength' roster to consider all players)
-    t1_roster_fs = filter_roster(t1_full_roster_tuples, is_full_strength=True)
-    t2_roster_fs = filter_roster(t2_full_roster_tuples, is_full_strength=True)
+    # 1. Calculate the baseline stats
+    baseline_data = {s: {team1_name: {}, team2_name: {}} for s in scenarios_to_check}
+    for scenario in scenarios_to_check:
+        for other in other_team_names:
+            baseline_data[scenario][team1_name][other] = all_h2h_probs[(team1_name, other, scenario)]['overall']
+            baseline_data[scenario][team2_name][other] = all_h2h_probs[(team2_name, other, scenario)]['overall']
 
+    # 2. Identify TRADABLE players (Filtering Step)
+    def get_tradable_players(roster_tuples):
+        tradable = []
+        for pid, status in roster_tuples:
+            if status == 'DROP': 
+                continue
+            # Check injury constraint
+            if not allow_trading_injured and status == 'INJ':
+                continue
+            tradable.append(pid)
+        return tradable
+
+    t1_tradable_ids = get_tradable_players(t1_full_roster_tuples)
+    t2_tradable_ids = get_tradable_players(t2_full_roster_tuples)
+
+    # 3. Generate combinations
     try:
-        t1_combos = list(combinations(t1_roster_fs, n))
-        t2_combos = list(combinations(t2_roster_fs, n))
+        t1_combos = list(combinations(t1_tradable_ids, n))
+        t2_combos = list(combinations(t2_tradable_ids, n))
     except ValueError as e:
         print(f"ERROR: Cannot make {n}-player combinations. {e}")
         return
             
     total_trades_to_check = len(t1_combos) * len(t2_combos)
-    if total_trades_to_check == 0:
-        print("No trades to check.")
-        return
-        
     print(f"\nChecking {total_trades_to_check} possible {n}-for-{n} trades...")
     checked_count = 0
     
     def get_player_names(player_ids):
         return [id_to_name_map.get(pid, pid) for pid in player_ids]
 
-    # 3. Loop through every trade combination
+    # 4. Loop through trade combinations
     for t1_players_out in t1_combos:
         for t2_players_out in t2_combos:
             
             checked_count += 1
-            is_win_win_both_scenarios = True
+            is_trade_valid = True
             trade_results_by_scenario = {}
             
-            if checked_count % 100 == 0 or total_trades_to_check < 100:
-                print(f"\n--- [Trade {checked_count} / {total_trades_to_check}] ---")
-                t1_gives_names = ", ".join(get_player_names(t1_players_out))
-                t2_gives_names = ", ".join(get_player_names(t2_players_out))
-                print(f"Checking: {team1_name} gives [{t1_gives_names}] for [{t2_gives_names}]")
+            if checked_count % 5000 == 0:
+                 print(f" ... checked {checked_count}/{total_trades_to_check}")
 
-            # 4. Check trade for BOTH scenarios
-            for scenario in ["FullStrength", "Current"]:
-                
-                # Get correct baseline rosters for this scenario
+            for scenario in scenarios_to_check:
+                # Get base rosters for this scenario (Active players only if scenario is Current)
                 t1_roster = filter_roster(t1_full_roster_tuples, is_full_strength=(scenario=="FullStrength"))
                 t2_roster = filter_roster(t2_full_roster_tuples, is_full_strength=(scenario=="FullStrength"))
                 
-                # Check if this trade is valid for the current scenario
-                # (e.g., an INJ player might not be in the 'Current' roster)
-                if not all(p in t1_roster for p in t1_players_out) or \
-                   not all(p in t2_roster for p in t2_players_out):
-                    is_win_win_both_scenarios = False
-                    if checked_count % 100 == 0: print(f"Skipping {scenario}: Player not in active roster.")
-                    break # This trade is invalid for this scenario, so it fails the "both" check
-                
-                # Build new rosters
+                # Construct NEW rosters
+                # We keep players not traded out, and add players traded in.
                 t1_new_roster = [p for p in t1_roster if p not in t1_players_out] + list(t2_players_out)
                 t2_new_roster = [p for p in t2_roster if p not in t2_players_out] + list(t1_players_out)
                 
-                # --- FAST SIMULATION ---
+                # Fast Sim
                 t1_new_weeks = build_team_weeks_from_players(t1_new_roster, player_weekly_stats_map, N_SIM_WEEKS)
                 t2_new_weeks = build_team_weeks_from_players(t2_new_roster, player_weekly_stats_map, N_SIM_WEEKS)
                 
-                # 5. Calculate new win sums against OTHER teams
-                t1_new_total_wins = 0.0
-                t2_new_total_wins = 0.0
+                # Calculate Deltas
+                t1_deltas = {}
+                t2_deltas = {}
+                t1_gain_sum = 0.0
+                t2_gain_sum = 0.0
                 
-                for other_team_name in other_team_names:
-                    other_weeks = all_team_weekly_stats[other_team_name][scenario]
+                for other in other_team_names:
+                    other_weeks = all_team_weekly_stats[other][scenario]
                     
-                    probs1 = compare_n_weeks(t1_new_weeks, other_weeks)
-                    t1_new_total_wins += probs1['overall']
+                    new_win_pct_1 = compare_n_weeks(t1_new_weeks, other_weeks)['overall']
+                    new_win_pct_2 = compare_n_weeks(t2_new_weeks, other_weeks)['overall']
                     
-                    probs2 = compare_n_weeks(t2_new_weeks, other_weeks)
-                    t2_new_total_wins += probs2['overall']
+                    d1 = new_win_pct_1 - baseline_data[scenario][team1_name][other]
+                    d2 = new_win_pct_2 - baseline_data[scenario][team2_name][other]
+                    
+                    t1_deltas[other] = d1
+                    t2_deltas[other] = d2
+                    t1_gain_sum += d1
+                    t2_gain_sum += d2
 
-                # 6. Check if this scenario is a win-win
-                t1_baseline_sum = baseline_win_sums[scenario]['t1']
-                t2_baseline_sum = baseline_win_sums[scenario]['t2']
-                
-                t1_gain = t1_new_total_wins - t1_baseline_sum
-                t2_gain = t2_new_total_wins - t2_baseline_sum
-
-                if t1_gain <= 0 or t2_gain <= 0:
-                    is_win_win_both_scenarios = False
-                    if checked_count % 100 == 0:
-                        print(f"Failed {scenario}: T1 Gain={t1_gain:.3f}, T2 Gain={t2_gain:.3f}")
-                    break # Fails the "win-win" for this scenario
-                
-                # --- LOGGING: H2H between T1 and T2 ---
-                new_h2h_probs = compare_n_weeks(t1_new_weeks, t2_new_weeks)
-                if checked_count % 100 == 0 or total_trades_to_check < 100:
-                    print(f"  H2H ({scenario}) - {team1_name} Win %: {new_h2h_probs['overall']:.2%}")
+                # Success Check
+                if t1_gain_sum <= 0 or t2_gain_sum < -team2_loss_tolerance:
+                    is_trade_valid = False
+                    break 
                 
                 trade_results_by_scenario[scenario] = {
-                    "t1_gain": t1_gain,
-                    "t2_gain": t2_gain,
-                    "t1_old_sum": t1_baseline_sum,
-                    "t1_new_sum": t1_new_total_wins,
-                    "t2_old_sum": t2_baseline_sum,
-                    "t2_new_sum": t2_new_total_wins,
-                    "new_h2h_probs": new_h2h_probs
+                    "t1_gain_sum": t1_gain_sum,
+                    "t2_gain_sum": t2_gain_sum,
+                    "t1_deltas": t1_deltas,
+                    "t2_deltas": t2_deltas
                 }
 
-            # 7. If it was a win-win in BOTH scenarios, store it
-            if is_win_win_both_scenarios:
-                print(f"*** SUCCESSFUL TRADE FOUND (Trade {checked_count}) ***")
-                combined_gain = (
-                    trade_results_by_scenario['FullStrength']['t1_gain'] +
-                    trade_results_by_scenario['FullStrength']['t2_gain'] +
-                    trade_results_by_scenario['Current']['t1_gain'] +
-                    trade_results_by_scenario['Current']['t2_gain']
-                )
+            if is_trade_valid:
+                combined_gain = 0
+                for scen in scenarios_to_check:
+                    combined_gain += trade_results_by_scenario[scen]['t1_gain_sum']
+                    combined_gain += trade_results_by_scenario[scen]['t2_gain_sum']
                 
                 successful_trades.append({
                     "t1_gives": t1_players_out,
                     "t2_gives": t2_players_out,
                     "combined_gain": combined_gain,
-                    "results_fs": trade_results_by_scenario['FullStrength'],
-                    "results_current": trade_results_by_scenario['Current']
+                    "results": trade_results_by_scenario
                 })
 
     print(f"\n--- Trade check complete. {len(successful_trades)} successful trades found. ---")
 
-    # 8. Sort and print final results
     if not successful_trades:
-        print(f"No beneficial {n}-for-{n} 'win-win' trades found for {team1_name} & {team2_name}.")
+        print(f"No trades found matching criteria.")
         return
         
-    print(f"\n--- Top 'Win-Win' Trades (by Combined Total Gain) for {team1_name} & {team2_name} ---")
-    
+    print(f"\n--- Top Trades (Sorted by Combined Gain) ---")
     sorted_trades = sorted(successful_trades, key=lambda x: x['combined_gain'], reverse=True)
     
-    for i, trade in enumerate(sorted_trades[:10]): # Print top 10
-        t1_gives_names = ", ".join(get_player_names(trade['t1_gives']))
-        t2_gives_names = ", ".join(get_player_names(trade['t2_gives']))
+    for i, trade in enumerate(sorted_trades[:15]):
+        t1_names = ", ".join(get_player_names(trade['t1_gives']))
+        t2_names = ", ".join(get_player_names(trade['t2_gives']))
         
-        print(f"\n{i+1}. {team1_name} GIVES [{t1_gives_names}] FOR {team2_name}'S [{t2_gives_names}]")
-        print(f"   Total Combined Gain: +{trade['combined_gain']:.3f} wins")
-        
-        print("   --- FullStrength Scenario ---")
-        res_fs = trade['results_fs']
-        print(f"     {team1_name}: {res_fs['t1_old_sum']:.2f} -> {res_fs['t1_new_sum']:.2f} ({res_fs['t1_gain']:+.3f} win sum)")
-        print(f"     {team2_name}: {res_fs['t2_old_sum']:.2f} -> {res_fs['t2_new_sum']:.2f} ({res_fs['t2_gain']:+.3f} win sum)")
-        print(f"     New H2H: {team1_name} wins {res_fs['new_h2h_probs']['overall']:.2%}")
+        print(f"\n{'='*60}")
+        print(f"TRADE #{i+1}: {team1_name} gets [{t2_names}] <--> {team2_name} gets [{t1_names}]")
+        print(f"Combined Metric: {trade['combined_gain']:.4f}")
+        print(f"{'-'*60}")
 
-        print("   --- Current Scenario ---")
-        res_cur = trade['results_current']
-        print(f"     {team1_name}: {res_cur['t1_old_sum']:.2f} -> {res_cur['t1_new_sum']:.2f} ({res_cur['t1_gain']:+.3f} win sum)")
-        print(f"     {team2_name}: {res_cur['t2_old_sum']:.2f} -> {res_cur['t2_new_sum']:.2f} ({res_cur['t2_gain']:+.3f} win sum)")
-        print(f"     New H2H: {team1_name} wins {res_cur['new_h2h_probs']['overall']:.2%}")
+        def print_team_table(team_name, is_team_1):
+            res_curr = trade['results']['Current']
+            res_fs   = trade['results']['FullStrength']
+            key = 't1_deltas' if is_team_1 else 't2_deltas'
+            deltas_curr = res_curr[key]
+            deltas_fs   = res_fs[key]
+            
+            num_opp = len(deltas_curr)
+            key_sum = 't1_gain_sum' if is_team_1 else 't2_gain_sum'
+            avg_curr = res_curr[key_sum] / num_opp if num_opp > 0 else 0
+            avg_fs   = res_fs[key_sum]   / num_opp if num_opp > 0 else 0
 
+            print(f"{team_name:<20} {'Curr':>10} {'FS':>10}")
+            print(f"{'-'*42}")
+            print(f"{'Overall (Avg)':<20} {avg_curr:>10.4f} {avg_fs:>10.4f}")
+            
+            for opp in sorted(deltas_curr.keys()):
+                val_c = deltas_curr[opp]
+                val_f = deltas_fs[opp]
+                print(f"vs {opp:<17} {val_c:>10.4f} {val_f:>10.4f}")
+            print() 
 
+        print_team_table(team1_name, is_team_1=True)
+        print_team_table(team2_name, is_team_1=False)
 # --- Main Execution Block ---
 
 if __name__ == "__main__":
@@ -606,16 +600,18 @@ if __name__ == "__main__":
         session, rosters_map, player_weekly_stats_map, id_to_name_map
     )
     
-    # --- NEW STEP 4 (Example) ---
+    # --- NEW STEP 4 (Example) ---if 'rosters_map' in locals():
     find_trades(
         n=2,
         team1_name="Alex",
-        team2_name="Drodge",
+        team2_name="Edmund",
         rosters_map=rosters_map,
         player_weekly_stats_map=player_weekly_stats_map,
         all_team_weekly_stats=all_team_weekly_stats,
         all_h2h_probs=all_h2h_probs,
-        id_to_name_map=id_to_name_map
+        id_to_name_map=id_to_name_map,
+        team2_loss_tolerance=0.2,
+        allow_trading_injured=False
     )
     
     session.close()
