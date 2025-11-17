@@ -38,7 +38,7 @@ except ImportError as e:
 # --- Simulation Configuration ---
 N_GAMES_TO_GENERATE = 10000
 N_SIM_WEEKS = 5000 
-SIM_YEAR_WEIGHTS = [(2026, 1), (2025, 0.2), (2024, 0.1)]
+SIM_YEAR_WEIGHTS = [(2026, 1.2), (2025, 0.2), (2024, 0.1)]
 PRIOR_PLAY_PERCENTAGE = 0.85
 PRIOR_STRENGTH_IN_GAMES = 82.0
 EXPECTED_ROSTER_SIZE = 13
@@ -384,6 +384,8 @@ def run_league_simulation(
 # --- Trade Finder Function (MODIFIED per new logic) ---
 # --- Trade Finder Function (V6 - Verbose Output) ---
 
+# --- Trade Finder Function (V8 - Expressive Tables) ---
+
 def find_trades(
     n: int,
     team1_name: str,
@@ -394,11 +396,11 @@ def find_trades(
     all_h2h_probs: Dict,
     id_to_name_map: Dict,
     team2_loss_tolerance: float = 0.0,
-    allow_trading_injured: bool = True  # <--- NEW PARAMETER
+    allow_trading_injured: bool = True
 ):
     """
     Finds trades where Team 1 improves and Team 2's loss is within tolerance.
-    - allow_trading_injured=False will prevent INJ players from being proposed in trades.
+    Output includes Before/After/Delta for both Current and FullStrength scenarios.
     """
     print(f"\n--- Step 4: Finding best {n}-for-{n} trades for {team1_name} & {team2_name} ---")
     print(f"Config: T2 Tolerance = -{team2_loss_tolerance} | Allow Injured Trades = {allow_trading_injured}")
@@ -413,6 +415,7 @@ def find_trades(
     scenarios_to_check = ["FullStrength", "Current"]
 
     # 1. Calculate the baseline stats
+    # Structure: baseline_data[scenario][team][opponent] = win_pct
     baseline_data = {s: {team1_name: {}, team2_name: {}} for s in scenarios_to_check}
     for scenario in scenarios_to_check:
         for other in other_team_names:
@@ -423,11 +426,8 @@ def find_trades(
     def get_tradable_players(roster_tuples):
         tradable = []
         for pid, status in roster_tuples:
-            if status == 'DROP': 
-                continue
-            # Check injury constraint
-            if not allow_trading_injured and status == 'INJ':
-                continue
+            if status == 'DROP': continue
+            if not allow_trading_injured and status == 'INJ': continue
             tradable.append(pid)
         return tradable
 
@@ -461,12 +461,9 @@ def find_trades(
                  print(f" ... checked {checked_count}/{total_trades_to_check}")
 
             for scenario in scenarios_to_check:
-                # Get base rosters for this scenario (Active players only if scenario is Current)
                 t1_roster = filter_roster(t1_full_roster_tuples, is_full_strength=(scenario=="FullStrength"))
                 t2_roster = filter_roster(t2_full_roster_tuples, is_full_strength=(scenario=="FullStrength"))
                 
-                # Construct NEW rosters
-                # We keep players not traded out, and add players traded in.
                 t1_new_roster = [p for p in t1_roster if p not in t1_players_out] + list(t2_players_out)
                 t2_new_roster = [p for p in t2_roster if p not in t2_players_out] + list(t1_players_out)
                 
@@ -474,9 +471,12 @@ def find_trades(
                 t1_new_weeks = build_team_weeks_from_players(t1_new_roster, player_weekly_stats_map, N_SIM_WEEKS)
                 t2_new_weeks = build_team_weeks_from_players(t2_new_roster, player_weekly_stats_map, N_SIM_WEEKS)
                 
-                # Calculate Deltas
+                # Stats containers
                 t1_deltas = {}
                 t2_deltas = {}
+                t1_new_vals = {} # Store the raw "After" win %
+                t2_new_vals = {} 
+                
                 t1_gain_sum = 0.0
                 t2_gain_sum = 0.0
                 
@@ -486,15 +486,22 @@ def find_trades(
                     new_win_pct_1 = compare_n_weeks(t1_new_weeks, other_weeks)['overall']
                     new_win_pct_2 = compare_n_weeks(t2_new_weeks, other_weeks)['overall']
                     
-                    d1 = new_win_pct_1 - baseline_data[scenario][team1_name][other]
-                    d2 = new_win_pct_2 - baseline_data[scenario][team2_name][other]
+                    # Retrieve Base
+                    base_1 = baseline_data[scenario][team1_name][other]
+                    base_2 = baseline_data[scenario][team2_name][other]
+                    
+                    d1 = new_win_pct_1 - base_1
+                    d2 = new_win_pct_2 - base_2
                     
                     t1_deltas[other] = d1
                     t2_deltas[other] = d2
+                    t1_new_vals[other] = new_win_pct_1
+                    t2_new_vals[other] = new_win_pct_2
+                    
                     t1_gain_sum += d1
                     t2_gain_sum += d2
 
-                # Success Check
+                # Check Criteria
                 if t1_gain_sum <= 0 or t2_gain_sum < -team2_loss_tolerance:
                     is_trade_valid = False
                     break 
@@ -503,7 +510,9 @@ def find_trades(
                     "t1_gain_sum": t1_gain_sum,
                     "t2_gain_sum": t2_gain_sum,
                     "t1_deltas": t1_deltas,
-                    "t2_deltas": t2_deltas
+                    "t2_deltas": t2_deltas,
+                    "t1_new_vals": t1_new_vals, # NEW
+                    "t2_new_vals": t2_new_vals  # NEW
                 }
 
             if is_trade_valid:
@@ -532,31 +541,65 @@ def find_trades(
         t1_names = ", ".join(get_player_names(trade['t1_gives']))
         t2_names = ", ".join(get_player_names(trade['t2_gives']))
         
-        print(f"\n{'='*60}")
+        print(f"\n{'='*85}")
         print(f"TRADE #{i+1}: {team1_name} gets [{t2_names}] <--> {team2_name} gets [{t1_names}]")
         print(f"Combined Metric: {trade['combined_gain']:.4f}")
-        print(f"{'-'*60}")
+        print(f"{'-'*85}")
 
         def print_team_table(team_name, is_team_1):
             res_curr = trade['results']['Current']
             res_fs   = trade['results']['FullStrength']
-            key = 't1_deltas' if is_team_1 else 't2_deltas'
-            deltas_curr = res_curr[key]
-            deltas_fs   = res_fs[key]
             
-            num_opp = len(deltas_curr)
-            key_sum = 't1_gain_sum' if is_team_1 else 't2_gain_sum'
-            avg_curr = res_curr[key_sum] / num_opp if num_opp > 0 else 0
-            avg_fs   = res_fs[key_sum]   / num_opp if num_opp > 0 else 0
+            # Select keys based on team
+            key_delta = 't1_deltas' if is_team_1 else 't2_deltas'
+            key_new   = 't1_new_vals' if is_team_1 else 't2_new_vals'
+            key_sum   = 't1_gain_sum' if is_team_1 else 't2_gain_sum'
+            
+            # Data maps
+            deltas_c = res_curr[key_delta]
+            new_c    = res_curr[key_new]
+            deltas_f = res_fs[key_delta]
+            new_f    = res_fs[key_new]
+            
+            num_opp = len(deltas_c)
+            
+            # Calculate Averages
+            avg_delta_c = res_curr[key_sum] / num_opp if num_opp > 0 else 0
+            avg_delta_f = res_fs[key_sum] / num_opp if num_opp > 0 else 0
+            
+            # We need to calculate Avg Base and Avg New for the Overall row
+            # Base isn't stored in 'results', we pull it from baseline_data
+            base_c_sum = sum(baseline_data['Current'][team_name][o] for o in deltas_c.keys())
+            base_f_sum = sum(baseline_data['FullStrength'][team_name][o] for o in deltas_f.keys())
+            
+            avg_base_c = base_c_sum / num_opp if num_opp > 0 else 0
+            avg_base_f = base_f_sum / num_opp if num_opp > 0 else 0
+            avg_new_c  = avg_base_c + avg_delta_c
+            avg_new_f  = avg_base_f + avg_delta_f
 
-            print(f"{team_name:<20} {'Curr':>10} {'FS':>10}")
-            print(f"{'-'*42}")
-            print(f"{'Overall (Avg)':<20} {avg_curr:>10.4f} {avg_fs:>10.4f}")
+            # --- PRINT HEADER ---
+            # Layout: Opponent | C.Base C.New C.Diff | F.Base F.New F.Diff
+            print(f"{team_name:<18} | {'CURR':^20} | {'FULL STRENGTH':^20}")
+            print(f"{'Opponent':<18} | {'Base':>6} {'New':>6} {'Diff':>6} | {'Base':>6} {'New':>6} {'Diff':>6}")
+            print(f"{'-'*68}")
             
-            for opp in sorted(deltas_curr.keys()):
-                val_c = deltas_curr[opp]
-                val_f = deltas_fs[opp]
-                print(f"vs {opp:<17} {val_c:>10.4f} {val_f:>10.4f}")
+            # --- PRINT OVERALL ROW ---
+            print(f"{'OVERALL (Avg)':<18} | {avg_base_c:>6.3f} {avg_new_c:>6.3f} {avg_delta_c:>+6.3f} | {avg_base_f:>6.3f} {avg_new_f:>6.3f} {avg_delta_f:>+6.3f}")
+            print(f"{'-'*68}")
+
+            # --- PRINT OPPONENT ROWS ---
+            for opp in sorted(deltas_c.keys()):
+                # Current Values
+                dc = deltas_c[opp]
+                nc = new_c[opp]
+                bc = baseline_data['Current'][team_name][opp]
+                
+                # Full Strength Values
+                df = deltas_f[opp]
+                nf = new_f[opp]
+                bf = baseline_data['FullStrength'][team_name][opp]
+                
+                print(f"vs {opp:<15} | {bc:>6.3f} {nc:>6.3f} {dc:>+6.3f} | {bf:>6.3f} {nf:>6.3f} {df:>+6.3f}")
             print() 
 
         print_team_table(team1_name, is_team_1=True)
