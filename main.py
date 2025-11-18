@@ -13,12 +13,13 @@ try:
     from teams_and_players_lib import get_league_rosters
     from game_picker_lib import (
         predict_all_player_probabilities,
-        generate_weighted_game_samples
+        generate_weighted_game_samples,
+        save_predictions_to_db
     )
 except ImportError as e:
     print(f"FATAL ERROR: Could not import libraries: {e}")
     print("Ensure database.py, teams_and_players_lib.py, game_picker_lib.py, and analysis_lib.py are present.")
-    exit(1)
+    sys.exit(1)
 
 # --- Simulation Configuration ---
 N_GAMES_TO_GENERATE = 10000
@@ -39,6 +40,8 @@ def get_all_player_game_pools(
     start_time = time.time()
     
     print("Calculating player availability...")
+    # Note: For simulation, we calculate on the fly. 
+    # If you want to use stored DB values, you'd query PlayerSeasonValue here instead.
     availability_map = predict_all_player_probabilities(
         session,
         SIM_YEAR_WEIGHTS,
@@ -116,6 +119,9 @@ def parse_arguments():
     
     subparsers = parser.add_subparsers(dest='command', help='Available Commands')
 
+    # Command: availability
+    parser_avail = subparsers.add_parser('availability', help='Calculate and save player availability (Year=1)')
+
     # Command: h2h
     parser_h2h = subparsers.add_parser('h2h', help='Run full league Head-to-Head analysis')
 
@@ -141,76 +147,102 @@ if __name__ == "__main__":
 
     print(f"--- Starting Fantasy League Simulator (Mode: {args.command.upper()}) ---")
     
-    session = SessionLocal()
+    try:
+        session = SessionLocal()
+        init_db()
+    except Exception as e:
+        print(f"Database connection failed: {e}")
+        sys.exit(1)
     
     try:
-        # 1. Setup and Load Data
-        init_db()
-        rosters_map = get_league_rosters()
-        if not rosters_map:
-            raise Exception("Could not get league rosters.")
+        # --- COMMAND: AVAILABILITY ---
+        if args.command == 'availability':
+            print(f"Calculating probabilities using weights: {SIM_YEAR_WEIGHTS}")
             
-        # Validate Teams if in trade mode
-        if args.command == 'trade':
-            valid_teams = set(rosters_map.keys())
-            if args.team1 not in valid_teams:
-                print(f"Error: '{args.team1}' is not a valid team.")
-                print(f"Valid teams: {', '.join(sorted(valid_teams))}")
-                sys.exit(1)
-            if args.team2 not in valid_teams:
-                print(f"Error: '{args.team2}' is not a valid team.")
-                print(f"Valid teams: {', '.join(sorted(valid_teams))}")
-                sys.exit(1)
-            if args.team1 == args.team2:
-                print("Error: Team 1 and Team 2 must be different.")
-                sys.exit(1)
+            all_probs = predict_all_player_probabilities(
+                session,
+                SIM_YEAR_WEIGHTS,
+                PRIOR_PLAY_PERCENTAGE,
+                PRIOR_STRENGTH_IN_GAMES
+            )
+            
+            # Save to DB with override
+            if all_probs:
+                save_predictions_to_db(session, all_probs)
+                
+                print("\n--- Top 5 Highest Availability ---")
+                sorted_probs = sorted(all_probs.items(), key=lambda x: x[1], reverse=True)
+                for pid, prob in sorted_probs[:5]:
+                    print(f"{pid:<15} : {prob:.1%}")
 
-        all_player_ids_set = set(pid for r in rosters_map.values() for pid, s in r)
-        
-        player_map_query = session.query(Player.player_id, Player.name).all()
-        id_to_name_map = {p.player_id: p.name for p in player_map_query}
-        
-        # 2. Generate Simulation Data (Common for both)
-        game_pools = get_all_player_game_pools(session, all_player_ids_set)
-        player_weekly_stats_map = pre_simulate_player_weeks(
-            game_pools,
-            all_player_ids_set,
-            N_SIM_WEEKS
-        )
+                print("\n--- Top 5 Lowest Availability ---")
+                for pid, prob in sorted_probs[-5:]:
+                    print(f"{pid:<15} : {prob:.1%}")
+            else:
+                print("No probability data generated.")
 
-        # 3. Run Logic Based on Command
-        if args.command == 'h2h':
-            # Just run the simulation and print the output
-            analysis.run_league_simulation(
-                rosters_map, player_weekly_stats_map, id_to_name_map, N_SIM_WEEKS
-            )
+        # --- COMMAND: H2H or TRADE (Simulation Logic) ---
+        else:
+            # 1. Load Data
+            rosters_map = get_league_rosters()
+            if not rosters_map:
+                raise Exception("Could not get league rosters.")
+                
+            # Validate Teams if in trade mode
+            if args.command == 'trade':
+                valid_teams = set(rosters_map.keys())
+                if args.team1 not in valid_teams:
+                    print(f"Error: '{args.team1}' is not a valid team.")
+                    sys.exit(1)
+                if args.team2 not in valid_teams:
+                    print(f"Error: '{args.team2}' is not a valid team.")
+                    sys.exit(1)
+                if args.team1 == args.team2:
+                    print("Error: Team 1 and Team 2 must be different.")
+                    sys.exit(1)
+
+            all_player_ids_set = set(pid for r in rosters_map.values() for pid, s in r)
             
-        elif args.command == 'trade':
-            # We need the baseline stats first to calculate deltas
-            print("\n(Calculating baseline league stats first...)")
-            all_team_weekly_stats, all_h2h_probs = analysis.run_league_simulation(
-                rosters_map, player_weekly_stats_map, id_to_name_map, N_SIM_WEEKS
-            )
+            player_map_query = session.query(Player.player_id, Player.name).all()
+            id_to_name_map = {p.player_id: p.name for p in player_map_query}
             
-            # Run Trade Finder
-            analysis.find_trades(
-                n=args.num,
-                team1_name=args.team1,
-                team2_name=args.team2,
-                rosters_map=rosters_map,
-                player_weekly_stats_map=player_weekly_stats_map,
-                all_team_weekly_stats=all_team_weekly_stats,
-                all_h2h_probs=all_h2h_probs,
-                id_to_name_map=id_to_name_map,
-                team2_loss_tolerance=args.tolerance,
-                allow_trading_injured=args.injured,
-                n_sim_weeks=N_SIM_WEEKS
+            # 2. Generate Simulation Data
+            game_pools = get_all_player_game_pools(session, all_player_ids_set)
+            player_weekly_stats_map = pre_simulate_player_weeks(
+                game_pools,
+                all_player_ids_set,
+                N_SIM_WEEKS
             )
+
+            # 3. Run Logic
+            if args.command == 'h2h':
+                analysis.run_league_simulation(
+                    rosters_map, player_weekly_stats_map, id_to_name_map, N_SIM_WEEKS
+                )
+                
+            elif args.command == 'trade':
+                print("\n(Calculating baseline league stats first...)")
+                all_team_weekly_stats, all_h2h_probs = analysis.run_league_simulation(
+                    rosters_map, player_weekly_stats_map, id_to_name_map, N_SIM_WEEKS
+                )
+                
+                analysis.find_trades(
+                    n=args.num,
+                    team1_name=args.team1,
+                    team2_name=args.team2,
+                    rosters_map=rosters_map,
+                    player_weekly_stats_map=player_weekly_stats_map,
+                    all_team_weekly_stats=all_team_weekly_stats,
+                    all_h2h_probs=all_h2h_probs,
+                    id_to_name_map=id_to_name_map,
+                    team2_loss_tolerance=args.tolerance,
+                    allow_trading_injured=args.injured,
+                    n_sim_weeks=N_SIM_WEEKS
+                )
 
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
-        # Optional: Print full traceback for debugging
-        # import traceback
-        # traceback.print_exc()
+        import traceback
+        traceback.print_exc()
     finally:
         session.close()

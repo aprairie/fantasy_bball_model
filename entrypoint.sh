@@ -10,6 +10,8 @@ done
 echo "PostgreSQL is up - initializing database"
 python database.py
 
+# echo "figuring out main.py options"; python main.py
+
 # echo "Starting scraper"
 # python scraper.py
 
@@ -31,8 +33,6 @@ python database.py
 # echo "Dumping Player Values to csv"
 # python dump_player_values_to_csv.py
 
-# echo "Printing Player availabilities"
-# python print_availability_main.py
 
 # echo "Trial run of player sampled games"
 # python trial_run_game_samples.py
@@ -40,8 +40,8 @@ python database.py
 # echo "Trial run of teams and players"
 # python trial_run_teams_and_players.py
 
-# echo "figuring out main.py options"; python main.py
-# echo "Trial run of Head to Head Matchups"; python main.py h2h
+echo "Printing Player availabilities and saving to DB"; python main.py availability
+echo "Trial run of Head to Head Matchups"; python main.py h2h
 echo "Trial run of Trade Simulation"; python main.py trade --team1 "Alex" --team2 "Edmund" -n 2 -t 0.1
 
 echo "Processing completed. Container will exit."
