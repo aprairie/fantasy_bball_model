@@ -5,13 +5,13 @@ Functions:
 - predict_all_player_probabilities: Calculates play probability for all players.
 - generate_weighted_game_samples: Generates a random sample of games.
 - save_predictions_to_db: Saves probabilities to DB as aggregate stats (season=1).
-- calculate_all_player_values: Runs the full pipeline to generate Season 1 (Simulated) and Season 2026 (Real) values.
+- calculate_all_player_values: Runs the full pipeline to generate Season 1 (Healthy) and Season 2 (Risk-Adjusted).
 """
 
 import random
 import numpy as np
 import time
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case, or_, select, exc
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -21,16 +21,21 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-    
-
 # Constant for the "Aggregate/Predictive" season ID
 PREDICTIVE_SEASON_ID = 1
+RISK_ADJUSTED_SEASON_ID = 2  # <--- NEW: Season ID for injury-adjusted stats
 
 # --- VALUE CALCULATION CONFIGURATION ---
 BENCHMARK_SEASON = 2025 
 CALCULATION_SEASON = 2026
 SIMULATED_SEASON_ID = 1
+
+# Weights for Availability Calculation
+AVAILABILITY_YEAR_WEIGHTS = [(2026, 1), (2025, 1), (2024, 1)]
+
+# Weights for Game Sampling (Performance)
 SIM_YEAR_WEIGHTS = [(2026, 2.5), (2025, 0.5), (2024, 0.1)]
+
 NUM_SIM_GAMES = 1000
 MIN_GAMES_PLAYED = 1 
 FG_BENCHMARK = 0.48
@@ -274,7 +279,7 @@ def generate_weighted_game_samples(
     return final_samples
 
 # ---------------------------------------------------------
-# NEW: VALUE CALCULATION FUNCTIONS (Moved from calculate_fantasy_value.py)
+# NEW: VALUE CALCULATION FUNCTIONS
 # ---------------------------------------------------------
 
 def get_season_stats(db: Session, season: int):
@@ -331,12 +336,15 @@ def get_season_stats(db: Session, season: int):
 
 def get_simulated_stats(db: Session, 
                         year_weights: List[Tuple[int, float]], 
-                        num_games: int) -> Dict[int, dict]:
+                        num_games: int,
+                        include_dummy_games: bool = False,
+                        availability_predictions: Dict[str, float] = {}) -> Dict[int, dict]:
     """
     Generates weighted, simulated stats for ALL players.
+    Accepts parameters to control injury simulation.
     """
-    print(f"\n--- Generating {num_games} simulated games per player ---")
-    print(f"Using weights: {year_weights}")
+    mode_str = "RISK-ADJUSTED" if include_dummy_games else "HEALTHY"
+    print(f"\n--- Generating {num_games} simulated games per player ({mode_str}) ---")
     
     try:
         all_players = db.query(Player.id, Player.player_id).all()
@@ -348,14 +356,14 @@ def get_simulated_stats(db: Session,
         
     print(f"Found {len(player_ids_to_sim)} total players to simulate.")
 
-    # Call internal library function with include_dummy_games=False for "healthy" stats
+    # Call internal library function
     sim_results = generate_weighted_game_samples(
         session=db,
         player_ids=player_ids_to_sim,
         num_games=num_games,
         year_weights=year_weights,
-        availability_predictions={}, 
-        include_dummy_games=False 
+        availability_predictions=availability_predictions, 
+        include_dummy_games=include_dummy_games 
     )
     
     stats_dict = {}
@@ -363,37 +371,46 @@ def get_simulated_stats(db: Session,
         int_pid = string_to_int_map.get(string_pid)
         if not int_pid:
             continue
-            
-        played_games = [g for g in game_list if g.minutes_played not in (None, "", "00:00")]
         
-        if not played_games:
-            avg_pts, avg_reb, avg_ast, avg_stl, avg_blk, avg_tpm, avg_to = 0,0,0,0,0,0,0
-            total_fga, total_fgm, total_fta, total_ftm = 0,0,0,0
-            games_played = 0
-        else:
-            games_played = len(played_games) 
-            avg_pts = float(np.mean([g.points for g in played_games]))
-            avg_reb = float(np.mean([g.total_rebounds for g in played_games]))
-            avg_ast = float(np.mean([g.assists for g in played_games]))
-            avg_stl = float(np.mean([g.steals for g in played_games]))
-            avg_blk = float(np.mean([g.blocks for g in played_games]))
-            avg_tpm = float(np.mean([g.three_pointers for g in played_games]))
-            avg_to = float(np.mean([g.turnovers for g in played_games]))
-            
-            total_fga = float(np.sum([g.field_goal_attempts for g in played_games]))
-            total_fgm = float(np.sum([g.field_goals for g in played_games]))
-            total_fta = float(np.sum([g.free_throw_attempts for g in played_games]))
-            total_ftm = float(np.sum([g.free_throws for g in played_games]))
+        # For "Risk Adjusted" stats, we KEEP the dummy games (zeros) in the denominator
+        # to lower the averages.
+        # However, if the game is "None" (which shouldn't happen with dummy games returning 0s), check carefully.
+        # Dummy games have minutes_played="00:00".
+        
+        # If we want per-game averages to reflect risk, we must divide by `num_games`, 
+        # effectively counting the zeroes.
+        # The `generate_weighted_game_samples` returns a list of size `num_games`.
+        
+        valid_games = [g for g in game_list if g is not None]
+        
+        if not valid_games:
+            continue
+
+        games_count = len(valid_games) # This should equal num_games
+        
+        # Sums include the zeros from dummy games
+        total_pts = float(np.sum([g.points or 0 for g in valid_games]))
+        total_reb = float(np.sum([g.total_rebounds or 0 for g in valid_games]))
+        total_ast = float(np.sum([g.assists or 0 for g in valid_games]))
+        total_stl = float(np.sum([g.steals or 0 for g in valid_games]))
+        total_blk = float(np.sum([g.blocks or 0 for g in valid_games]))
+        total_tpm = float(np.sum([g.three_pointers or 0 for g in valid_games]))
+        total_to = float(np.sum([g.turnovers or 0 for g in valid_games]))
+        
+        total_fga = float(np.sum([g.field_goal_attempts or 0 for g in valid_games]))
+        total_fgm = float(np.sum([g.field_goals or 0 for g in valid_games]))
+        total_fta = float(np.sum([g.free_throw_attempts or 0 for g in valid_games]))
+        total_ftm = float(np.sum([g.free_throws or 0 for g in valid_games]))
 
         stats_dict[int_pid] = {
-            'games_played': games_played,
-            'avg_pts': avg_pts,
-            'avg_reb': avg_reb,
-            'avg_ast': avg_ast,
-            'avg_stl': avg_stl,
-            'avg_blk': avg_blk,
-            'avg_tpm': avg_tpm,
-            'avg_to': avg_to,
+            'games_played': games_count,
+            'avg_pts': total_pts / games_count,
+            'avg_reb': total_reb / games_count,
+            'avg_ast': total_ast / games_count,
+            'avg_stl': total_stl / games_count,
+            'avg_blk': total_blk / games_count,
+            'avg_tpm': total_tpm / games_count,
+            'avg_to': total_to / games_count,
             'total_fga': total_fga,
             'total_fgm': total_fgm,
             'total_fta': total_fta,
@@ -521,14 +538,24 @@ def calculate_all_player_values(session: Session):
     Runs the full pipeline:
     1. Benchmarks against BENCHMARK_SEASON (2025).
     2. Calculates 'Real' scores for CALCULATION_SEASON (2026).
-    3. Calculates 'Simulated' scores for SIMULATED_SEASON_ID (1).
+    3. Calculates 'Simulated Healthy' scores for SIMULATED_SEASON_ID (1).
+    4. Calculates 'Simulated Risk-Adjusted' scores for RISK_ADJUSTED_SEASON_ID (2).
     """
     print(f"--- Starting Player Value Calculation ---")
     start_time = time.time()
     logger.info('starting calc all player value')
     
-    
     try:
+        # ==================================================================
+        # PASS 0: PREDICT AVAILABILITY
+        # We need these probabilities for the Risk-Adjusted simulation (Season 2)
+        # ==================================================================
+        logger.info(f"Calculating availability probabilities...")
+        availability_probs = predict_all_player_probabilities(
+            session, 
+            AVAILABILITY_YEAR_WEIGHTS
+        )
+        
         # ==================================================================
         # PASS 1: CALCULATE BENCHMARKS
         # We use BENCHMARK_SEASON (e.g., 2025) to establish what "Average" looks like.
@@ -578,7 +605,6 @@ def calculate_all_player_values(session: Session):
             'fg': np.std(fg_imp) + np.finfo(float).eps,
             'ft': np.std(ft_imp) + np.finfo(float).eps
         }
-        
 
         logger.info('Benchmarks calculated')
         print(f"Benchmarks calculated. StdDev Target: {target_std_dev:.4f}")
@@ -614,19 +640,24 @@ def calculate_all_player_values(session: Session):
 
 
         # ==================================================================
-        # PASS 3: CALCULATE SIMULATED STATS (Aggregate)
-        # Calculate scores based on 1000 simulated "healthy" games
+        # PASS 3: CALCULATE SIMULATED STATS (Healthy / True Talent)
+        # Season ID = 1
         # ==================================================================
-        print(f"\n--- Pass 3: Calculating Simulated Scores for Season {SIMULATED_SEASON_ID} ---")
+        print(f"\n--- Pass 3: Calculating Simulated (Healthy) Scores for Season {SIMULATED_SEASON_ID} ---")
         logger.info('Calcuating simulated scores for ' + str(SIMULATED_SEASON_ID))
         
-        sim_stats = get_simulated_stats(session, SIM_YEAR_WEIGHTS, NUM_SIM_GAMES)
+        sim_stats_healthy = get_simulated_stats(
+            session, 
+            SIM_YEAR_WEIGHTS, 
+            NUM_SIM_GAMES,
+            include_dummy_games=False  # <--- Healthy
+        )
         
-        if sim_stats:
-            calculate_impact_stats(sim_stats)
+        if sim_stats_healthy:
+            calculate_impact_stats(sim_stats_healthy)
             
             sim_scores = calculate_normalized_scores(
-                sim_stats, final_benchmarks, target_std_dev, impact_means, impact_std_devs
+                sim_stats_healthy, final_benchmarks, target_std_dev, impact_means, impact_std_devs
             )
             
             values_sim = []
@@ -641,6 +672,40 @@ def calculate_all_player_values(session: Session):
         else:
             print("No simulated stats generated.")
             logger.info('no simulated stats generated')
+
+        # ==================================================================
+        # PASS 4: CALCULATE SIMULATED STATS (Risk-Adjusted)
+        # Season ID = 2
+        # ==================================================================
+        print(f"\n--- Pass 4: Calculating Simulated (Risk-Adjusted) Scores for Season {RISK_ADJUSTED_SEASON_ID} ---")
+        logger.info('Calcuating simulated scores for ' + str(RISK_ADJUSTED_SEASON_ID))
+        
+        sim_stats_risky = get_simulated_stats(
+            session, 
+            SIM_YEAR_WEIGHTS, 
+            NUM_SIM_GAMES,
+            include_dummy_games=True, # <--- Risk Adjusted (Injuries Enabled)
+            availability_predictions=availability_probs
+        )
+        
+        if sim_stats_risky:
+            calculate_impact_stats(sim_stats_risky)
+            
+            sim_scores_risky = calculate_normalized_scores(
+                sim_stats_risky, final_benchmarks, target_std_dev, impact_means, impact_std_devs
+            )
+            
+            values_sim_risky = []
+            for player_id, scores in sim_scores_risky.items():
+                values_sim_risky.append({
+                    'player_id': player_id,
+                    'season': RISK_ADJUSTED_SEASON_ID, # <--- Stored as 2
+                    **scores
+                })
+            
+            upsert_season_values(session, values_sim_risky, RISK_ADJUSTED_SEASON_ID)
+        else:
+            print("No risk-adjusted stats generated.")
             
     except Exception as e:
         print(f"An unexpected error occurred during value calculation: {e}")
