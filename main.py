@@ -28,6 +28,7 @@ except ImportError as e:
 N_GAMES_TO_GENERATE = 10000
 N_SIM_WEEKS = 5000
 SIM_YEAR_WEIGHTS = [(2026, 1.2), (2025, 0.2), (2024, 0.1)]
+AVAILABILITY_SIM_YEAR_WEIGHTS = [(2026, 1), (2025, 1), (2024, 1)]
 PRIOR_PLAY_PERCENTAGE = 0.85
 PRIOR_STRENGTH_IN_GAMES = 82.0
 ALL_STAT_KEYS = ['pts', 'reb', 'ast', 'stl', 'blk', 'tpm', 'to', 'fga', 'fgm', 'fta', 'ftm']
@@ -45,7 +46,7 @@ def get_all_player_game_pools(
     print("Calculating player availability...")
     availability_map = predict_all_player_probabilities(
         session,
-        SIM_YEAR_WEIGHTS,
+        AVAILABILITY_SIM_YEAR_WEIGHTS,
         PRIOR_PLAY_PERCENTAGE,
         PRIOR_STRENGTH_IN_GAMES
     )

@@ -30,6 +30,7 @@ except ImportError:
 
 # --- Model Parameters ---
 YEAR_WEIGHTS = [(2025, 0.6), (2024, 0.3), (2023, 0.1)]
+AVAILABILITY_SIM_YEAR_WEIGHTS = [(2026, 1), (2025, 1), (2024, 1)]
 CURRENT_PREDICTION_SEASON = 2026
 PRIOR_PLAY_PERCENTAGE = 0.85
 PRIOR_STRENGTH_IN_GAMES = 82.0
@@ -86,12 +87,12 @@ def main():
         sys.exit(1)
 
     # --- 2. Run Predictions ---
-    print(f"Calculating probabilities using weights for seasons: {YEAR_WEIGHTS}")
+    print(f"Calculating probabilities using weights for seasons: {AVAILABILITY_SIM_YEAR_WEIGHTS}")
     all_probs = {}
     try:
         all_probs = predict_all_player_probabilities(
             session=session,
-            year_weights=YEAR_WEIGHTS,
+            year_weights=AVAILABILITY_SIM_YEAR_WEIGHTS,
             prior_play_percentage=PRIOR_PLAY_PERCENTAGE,
             prior_strength_in_games=PRIOR_STRENGTH_IN_GAMES
         )
