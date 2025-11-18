@@ -1,137 +1,13 @@
-"""
-League-Wide Matchup Simulation Script
-
-This script simulates thousands of weekly matchups between every
-team in the league to generate win probabilities.
-
-V4:
-- ARCHITECTURE CHANGE: Pre-simulates N_SIM_WEEKS for all *players* first.
-- Team simulations are now built by summing pre-simulated player-weeks,
-  making trade analysis dramatically faster.
-- Updated 'find_trades' to use new "sum of wins" logic and
-  "win-win" (in both scenarios) criteria.
-- Added detailed logging to trade finder.
-"""
-
-import random
 import time
 from typing import Dict, List, Tuple, Optional, Set
-from sqlalchemy.orm import Session
 from itertools import combinations
 
-# --- Library Imports ---
-try:
-    from database import SessionLocal, init_db, Player, GameStats
-    from teams_and_players_lib import get_league_rosters
-    from game_picker_lib import (
-        predict_all_player_probabilities,
-        generate_weighted_game_samples,
-        _create_dummy_game
-    )
-except ImportError as e:
-    print(f"FATAL ERROR: Could not import libraries: {e}")
-    print("Please ensure database.py, teams_and_players_lib.py, and")
-    print("game_picker_lib.py are in the same directory.")
-    exit(1)
-
-
-# --- Simulation Configuration ---
-N_GAMES_TO_GENERATE = 10000
-N_SIM_WEEKS = 5000 
-SIM_YEAR_WEIGHTS = [(2026, 1.2), (2025, 0.2), (2024, 0.1)]
-PRIOR_PLAY_PERCENTAGE = 0.85
-PRIOR_STRENGTH_IN_GAMES = 82.0
+# --- Constants ---
 EXPECTED_ROSTER_SIZE = 13
 CATEGORIES = ['pts', 'reb', 'ast', 'stl', 'blk', 'tpm', 'to', 'fg%', 'ft%']
 ALL_STAT_KEYS = ['pts', 'reb', 'ast', 'stl', 'blk', 'tpm', 'to', 'fga', 'fgm', 'fta', 'ftm']
 
-
 # --- Helper Functions ---
-
-def get_all_player_game_pools(
-    session: Session,
-    player_id_set: Set[str]
-) -> Dict[str, List[GameStats]]:
-    """
-    Generates the N_GAMES_TO_GENERATE-game pool for every player.
-    (This is the new Step 1)
-    """
-    print(f"\n--- Step 1: Generating {N_GAMES_TO_GENERATE}-game pools for {len(player_id_set)} players ---")
-    start_time = time.time()
-    
-    print("Calculating player availability...")
-    availability_map = predict_all_player_probabilities(
-        session,
-        SIM_YEAR_WEIGHTS,
-        PRIOR_PLAY_PERCENTAGE,
-        PRIOR_STRENGTH_IN_GAMES
-    )
-    
-    print(f"Generating {N_GAMES_TO_GENERATE} game samples for each player...")
-    game_pools = generate_weighted_game_samples(
-        session=session,
-        player_ids=list(player_id_set),
-        num_games=N_GAMES_TO_GENERATE,
-        year_weights=SIM_YEAR_WEIGHTS,
-        availability_predictions=availability_map,
-        include_dummy_games=True 
-    )
-    
-    end_time = time.time()
-    print(f"--- Game pools generated in {end_time - start_time:.2f} seconds ---")
-    return game_pools
-
-
-def pre_simulate_player_weeks(
-    game_pools: Dict[str, List[GameStats]],
-    player_id_set: Set[str],
-    num_weeks: int
-) -> Dict[str, List[Dict[str, float]]]:
-    """
-    Pre-simulates N_SIM_WEEKS for every player individually.
-    (This is the new Step 2)
-    """
-    print(f"\n--- Step 2: Pre-simulating {num_weeks} weeks for {len(player_id_set)} players ---")
-    start_time = time.time()
-    
-    player_weekly_stats_map = {player_id: [] for player_id in player_id_set}
-    
-    for player_id in player_id_set:
-        player_pool = game_pools.get(player_id)
-        player_weeks = []
-        
-        if not player_pool:
-            # Player has no game pool (e.g., new rookie), create 5000 empty weeks
-            dummy_week = {key: 0.0 for key in ALL_STAT_KEYS}
-            player_weekly_stats_map[player_id] = [dummy_week] * num_weeks
-            continue
-            
-        for _ in range(num_weeks):
-            weekly_totals = {key: 0.0 for key in ALL_STAT_KEYS}
-            num_games = 3 if random.random() < 0.5 else 4
-            simulated_games = random.sample(player_pool, num_games)
-            
-            for game in simulated_games:
-                weekly_totals['pts'] += (game.points or 0)
-                weekly_totals['reb'] += (game.total_rebounds or 0)
-                weekly_totals['ast'] += (game.assists or 0)
-                weekly_totals['stl'] += (game.steals or 0)
-                weekly_totals['blk'] += (game.blocks or 0)
-                weekly_totals['tpm'] += (game.three_pointers or 0)
-                weekly_totals['to'] += (game.turnovers or 0)
-                weekly_totals['fga'] += (game.field_goal_attempts or 0)
-                weekly_totals['fgm'] += (game.field_goals or 0)
-                weekly_totals['fta'] += (game.free_throw_attempts or 0)
-                weekly_totals['ftm'] += (game.free_throws or 0)
-            
-            player_weeks.append(weekly_totals)
-        
-        player_weekly_stats_map[player_id] = player_weeks
-
-    end_time = time.time()
-    print(f"--- Player-weeks simulated in {end_time - start_time:.2f} seconds ---")
-    return player_weekly_stats_map
-
 
 def build_team_weeks_from_players(
     roster_player_ids: List[str],
@@ -139,8 +15,7 @@ def build_team_weeks_from_players(
     num_weeks: int
 ) -> List[Dict[str, float]]:
     """
-    Builds a team's N_SIM_WEEKS stats by summing its players' pre-simulated weeks.
-    (This is the new, fast team simulation)
+    Builds a team's stats by summing its players' pre-simulated weeks.
     """
     team_weekly_stats_list = []
     for k in range(num_weeks):
@@ -148,14 +23,13 @@ def build_team_weeks_from_players(
         
         for player_id in roster_player_ids:
             player_week_k_stats = player_weekly_stats_map.get(player_id, [])
-            if player_week_k_stats: # Ensure player exists in map
+            if player_week_k_stats: 
                 for key in ALL_STAT_KEYS:
                     team_week_k_stats[key] += player_week_k_stats[k][key]
                     
         team_weekly_stats_list.append(team_week_k_stats)
         
     return team_weekly_stats_list
-
 
 def filter_roster(
     full_roster: List[Tuple[str, Optional[str]]],
@@ -172,13 +46,11 @@ def filter_roster(
                 active_roster.append(player_id)
     return active_roster
 
-
 def compare_n_weeks(
     t1_week_list: List[Dict[str, float]],
     t2_week_list: List[Dict[str, float]]
 ) -> Dict[str, float]:
     """Compares two lists of pre-simulated weeks and returns win probabilities for Team 1."""
-    
     total_wins = {cat: 0.0 for cat in CATEGORIES + ['overall']}
     num_weeks = len(t1_week_list)
     if num_weeks == 0:
@@ -189,15 +61,18 @@ def compare_n_weeks(
         t2_totals = t2_week_list[k]
         
         t1_weekly_wins = {}
+        # Counting categories
         for cat in ['pts', 'reb', 'ast', 'stl', 'blk', 'tpm']:
             if t1_totals[cat] > t2_totals[cat]: t1_weekly_wins[cat] = 1
             elif t1_totals[cat] < t2_totals[cat]: t1_weekly_wins[cat] = 0
             else: t1_weekly_wins[cat] = 0.5
-                
+        
+        # Turnovers (Lower is better)
         if t1_totals['to'] < t2_totals['to']: t1_weekly_wins['to'] = 1
         elif t1_totals['to'] > t2_totals['to']: t1_weekly_wins['to'] = 0
         else: t1_weekly_wins['to'] = 0.5
             
+        # Percentages
         t1_fg_pct = t1_totals['fgm'] / t1_totals['fga'] if t1_totals['fga'] > 0 else 0
         t2_fg_pct = t2_totals['fgm'] / t2_totals['fga'] if t2_totals['fga'] > 0 else 0
         if t1_fg_pct > t2_fg_pct: t1_weekly_wins['fg%'] = 1
@@ -221,11 +96,8 @@ def compare_n_weeks(
     win_probs = {cat: (total_wins[cat] / num_weeks) for cat in total_wins}
     return win_probs
 
-
-def calculate_average_stats(
-    weekly_stats_list: List[Dict[str, float]]
-) -> Dict[str, float]:
-    """Calculates the average per-week stats from a list of simulated weeks."""
+def calculate_average_stats(weekly_stats_list: List[Dict[str, float]]) -> Dict[str, float]:
+    """Calculates the average per-week stats."""
     if not weekly_stats_list:
         return {cat: 0.0 for cat in CATEGORIES + ['fgm', 'fga', 'ftm', 'fta']}
     
@@ -245,7 +117,7 @@ def calculate_average_stats(
     
     return avg_stats
 
-# --- CSV Printing Functions (No changes) ---
+# --- Printing Helpers ---
 
 def print_csv_header():
     header = [
@@ -289,28 +161,23 @@ def print_avg_stats_row(team, is_full_strength, avg_stats):
     print(",".join(row))
 
 
-# --- Main Simulation Function (MODIFIED) ---
+# --- Core Logic: League Simulation ---
 
 def run_league_simulation(
-    session: Session,
     rosters_map: Dict,
     player_weekly_stats_map: Dict,
-    id_to_name_map: Dict
-) -> Tuple[Dict, Dict, Dict]:
+    id_to_name_map: Dict,
+    n_sim_weeks: int
+) -> Tuple[Dict, Dict]:
     """
-    Runs the full H2H simulation and average stats report using
-    pre-simulated player-weeks.
-    (This is the new Step 3)
-    
-    Returns:
-        all_team_weekly_stats: The raw {team: {scenario: [week_list]}} data
-        all_h2h_probs: The raw { (t1, t2, scenario): {win_probs} } data
+    Runs the full H2H simulation and average stats report.
     """
     print(f"\n--- Step 3: Building teams and running baseline H2H matchups ---")
     
     all_team_weekly_stats = {} 
     team_names = sorted(list(rosters_map.keys()))
     
+    # Build Team Data
     for team_name in team_names:
         all_team_weekly_stats[team_name] = {}
         team_full_roster = rosters_map[team_name]
@@ -319,26 +186,12 @@ def run_league_simulation(
             scenario = "FullStrength" if is_full_strength else "Current"
             active_roster = filter_roster(team_full_roster, is_full_strength)
             
-            # --- ROSTER SIZE CHECK ---
-            roster_count = len(active_roster)
-            if roster_count != EXPECTED_ROSTER_SIZE:
-                print("\n--- FATAL ROSTER SIZE ERROR ---")
-                print(f"Team: {team_name} | Scenario: {scenario}")
-                print(f"ERROR: Roster size is {roster_count}. Expected: {EXPECTED_ROSTER_SIZE}")
-                print(f"\nPlayers found on this roster ({roster_count}):")
-                if not active_roster: print("  (No players found)")
-                for player_id in sorted(active_roster):
-                    print(f"  - {id_to_name_map.get(player_id, 'Unknown')} ({player_id})")
-                print("\nPlease correct the 'league_rosters.csv' file and try again.")
-                session.close()
-                exit(1)
-            # --- END CHECK ---
+            # Optional: Check roster size here if desired, removed for brevity in lib file
             
-            # --- MODIFIED: Use new builder function ---
             weekly_stats_list = build_team_weeks_from_players(
                 active_roster,
                 player_weekly_stats_map,
-                N_SIM_WEEKS
+                n_sim_weeks
             )
             all_team_weekly_stats[team_name][scenario] = weekly_stats_list
     
@@ -369,7 +222,7 @@ def run_league_simulation(
 
     print("\n--- Baseline H2H simulation complete ---")
     
-    # --- Print Average Stats ---
+    # Print Average Stats
     print_avg_stats_header()
     for team_name in team_names:
         for is_full_strength in [True, False]:
@@ -380,11 +233,7 @@ def run_league_simulation(
             
     return all_team_weekly_stats, all_h2h_probs
 
-
-# --- Trade Finder Function (MODIFIED per new logic) ---
-# --- Trade Finder Function (V6 - Verbose Output) ---
-
-# --- Trade Finder Function (V8 - Expressive Tables) ---
+# --- Core Logic: Trade Finder ---
 
 def find_trades(
     n: int,
@@ -396,11 +245,11 @@ def find_trades(
     all_h2h_probs: Dict,
     id_to_name_map: Dict,
     team2_loss_tolerance: float = 0.0,
-    allow_trading_injured: bool = True
+    allow_trading_injured: bool = True,
+    n_sim_weeks: int = 5000
 ):
     """
     Finds trades where Team 1 improves and Team 2's loss is within tolerance.
-    Output includes Before/After/Delta for both Current and FullStrength scenarios.
     """
     print(f"\n--- Step 4: Finding best {n}-for-{n} trades for {team1_name} & {team2_name} ---")
     print(f"Config: T2 Tolerance = -{team2_loss_tolerance} | Allow Injured Trades = {allow_trading_injured}")
@@ -415,14 +264,13 @@ def find_trades(
     scenarios_to_check = ["FullStrength", "Current"]
 
     # 1. Calculate the baseline stats
-    # Structure: baseline_data[scenario][team][opponent] = win_pct
     baseline_data = {s: {team1_name: {}, team2_name: {}} for s in scenarios_to_check}
     for scenario in scenarios_to_check:
         for other in other_team_names:
             baseline_data[scenario][team1_name][other] = all_h2h_probs[(team1_name, other, scenario)]['overall']
             baseline_data[scenario][team2_name][other] = all_h2h_probs[(team2_name, other, scenario)]['overall']
 
-    # 2. Identify TRADABLE players (Filtering Step)
+    # 2. Identify TRADABLE players
     def get_tradable_players(roster_tuples):
         tradable = []
         for pid, status in roster_tuples:
@@ -468,13 +316,13 @@ def find_trades(
                 t2_new_roster = [p for p in t2_roster if p not in t2_players_out] + list(t1_players_out)
                 
                 # Fast Sim
-                t1_new_weeks = build_team_weeks_from_players(t1_new_roster, player_weekly_stats_map, N_SIM_WEEKS)
-                t2_new_weeks = build_team_weeks_from_players(t2_new_roster, player_weekly_stats_map, N_SIM_WEEKS)
+                t1_new_weeks = build_team_weeks_from_players(t1_new_roster, player_weekly_stats_map, n_sim_weeks)
+                t2_new_weeks = build_team_weeks_from_players(t2_new_roster, player_weekly_stats_map, n_sim_weeks)
                 
                 # Stats containers
                 t1_deltas = {}
                 t2_deltas = {}
-                t1_new_vals = {} # Store the raw "After" win %
+                t1_new_vals = {}
                 t2_new_vals = {} 
                 
                 t1_gain_sum = 0.0
@@ -486,7 +334,6 @@ def find_trades(
                     new_win_pct_1 = compare_n_weeks(t1_new_weeks, other_weeks)['overall']
                     new_win_pct_2 = compare_n_weeks(t2_new_weeks, other_weeks)['overall']
                     
-                    # Retrieve Base
                     base_1 = baseline_data[scenario][team1_name][other]
                     base_2 = baseline_data[scenario][team2_name][other]
                     
@@ -511,8 +358,8 @@ def find_trades(
                     "t2_gain_sum": t2_gain_sum,
                     "t1_deltas": t1_deltas,
                     "t2_deltas": t2_deltas,
-                    "t1_new_vals": t1_new_vals, # NEW
-                    "t2_new_vals": t2_new_vals  # NEW
+                    "t1_new_vals": t1_new_vals,
+                    "t2_new_vals": t2_new_vals
                 }
 
             if is_trade_valid:
@@ -550,12 +397,10 @@ def find_trades(
             res_curr = trade['results']['Current']
             res_fs   = trade['results']['FullStrength']
             
-            # Select keys based on team
             key_delta = 't1_deltas' if is_team_1 else 't2_deltas'
             key_new   = 't1_new_vals' if is_team_1 else 't2_new_vals'
             key_sum   = 't1_gain_sum' if is_team_1 else 't2_gain_sum'
             
-            # Data maps
             deltas_c = res_curr[key_delta]
             new_c    = res_curr[key_new]
             deltas_f = res_fs[key_delta]
@@ -563,12 +408,9 @@ def find_trades(
             
             num_opp = len(deltas_c)
             
-            # Calculate Averages
             avg_delta_c = res_curr[key_sum] / num_opp if num_opp > 0 else 0
             avg_delta_f = res_fs[key_sum] / num_opp if num_opp > 0 else 0
             
-            # We need to calculate Avg Base and Avg New for the Overall row
-            # Base isn't stored in 'results', we pull it from baseline_data
             base_c_sum = sum(baseline_data['Current'][team_name][o] for o in deltas_c.keys())
             base_f_sum = sum(baseline_data['FullStrength'][team_name][o] for o in deltas_f.keys())
             
@@ -577,24 +419,16 @@ def find_trades(
             avg_new_c  = avg_base_c + avg_delta_c
             avg_new_f  = avg_base_f + avg_delta_f
 
-            # --- PRINT HEADER ---
-            # Layout: Opponent | C.Base C.New C.Diff | F.Base F.New F.Diff
             print(f"{team_name:<18} | {'CURR':^20} | {'FULL STRENGTH':^20}")
             print(f"{'Opponent':<18} | {'Base':>6} {'New':>6} {'Diff':>6} | {'Base':>6} {'New':>6} {'Diff':>6}")
             print(f"{'-'*68}")
-            
-            # --- PRINT OVERALL ROW ---
             print(f"{'OVERALL (Avg)':<18} | {avg_base_c:>6.3f} {avg_new_c:>6.3f} {avg_delta_c:>+6.3f} | {avg_base_f:>6.3f} {avg_new_f:>6.3f} {avg_delta_f:>+6.3f}")
             print(f"{'-'*68}")
 
-            # --- PRINT OPPONENT ROWS ---
             for opp in sorted(deltas_c.keys()):
-                # Current Values
                 dc = deltas_c[opp]
                 nc = new_c[opp]
                 bc = baseline_data['Current'][team_name][opp]
-                
-                # Full Strength Values
                 df = deltas_f[opp]
                 nf = new_f[opp]
                 bf = baseline_data['FullStrength'][team_name][opp]
@@ -604,59 +438,3 @@ def find_trades(
 
         print_team_table(team1_name, is_team_1=True)
         print_team_table(team2_name, is_team_1=False)
-# --- Main Execution Block ---
-
-if __name__ == "__main__":
-    print("--- Starting Full League Simulation & Trade Analysis (V4) ---")
-    main_start_time = time.time()
-    
-    session = SessionLocal()
-    
-    try:
-        init_db()
-        rosters_map = get_league_rosters()
-        if not rosters_map:
-            raise Exception("Could not get league rosters.")
-            
-        all_player_ids_set = set(pid for r in rosters_map.values() for pid, s in r)
-        
-        player_map_query = session.query(Player.player_id, Player.name).all()
-        id_to_name_map = {p.player_id: p.name for p in player_map_query}
-        
-        # --- NEW STEP 1 ---
-        game_pools = get_all_player_game_pools(session, all_player_ids_set)
-        
-        # --- NEW STEP 2 ---
-        player_weekly_stats_map = pre_simulate_player_weeks(
-            game_pools,
-            all_player_ids_set,
-            N_SIM_WEEKS
-        )
-        
-    except Exception as e:
-        print(f"FATAL ERROR during setup: {e}")
-        session.close()
-        exit(1)
-
-    # --- NEW STEP 3 ---
-    all_team_weekly_stats, all_h2h_probs = run_league_simulation(
-        session, rosters_map, player_weekly_stats_map, id_to_name_map
-    )
-    
-    # --- NEW STEP 4 (Example) ---if 'rosters_map' in locals():
-    find_trades(
-        n=2,
-        team1_name="Alex",
-        team2_name="Edmund",
-        rosters_map=rosters_map,
-        player_weekly_stats_map=player_weekly_stats_map,
-        all_team_weekly_stats=all_team_weekly_stats,
-        all_h2h_probs=all_h2h_probs,
-        id_to_name_map=id_to_name_map,
-        team2_loss_tolerance=0.2,
-        allow_trading_injured=False
-    )
-    
-    session.close()
-    main_end_time = time.time()
-    print(f"\n--- Script Finished. Total time: {main_end_time - main_start_time:.2f} seconds ---")

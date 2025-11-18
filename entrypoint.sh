@@ -40,7 +40,8 @@ python database.py
 # echo "Trial run of teams and players"
 # python trial_run_teams_and_players.py
 
-echo "Trial run of Head to Head Matchups"
-python trial_run_head_to_head_matchups.py
+# echo "figuring out main.py options"; python main.py
+# echo "Trial run of Head to Head Matchups"; python main.py h2h
+echo "Trial run of Trade Simulation"; python main.py trade --team1 "Alex" --team2 "Edmund" -n 2 -t 0.1
 
 echo "Processing completed. Container will exit."
