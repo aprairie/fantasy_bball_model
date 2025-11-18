@@ -35,9 +35,10 @@ python database.py
 # python trial_run_teams_and_players.py
 
 # echo "Scraping birthdays and saving to db"; python main.py scrape --birthdays
-echo "Scraping game stats and saving to db"; python main.py scrape --years 2018 2019
+# echo "Scraping game stats and saving to db"; python main.py scrape --years 2018 2019
 # echo "Printing Player availabilities and saving to DB"; python main.py availability
 # echo "Trial run of Head to Head Matchups"; python main.py h2h
 # echo "Trial run of Trade Simulation"; python main.py trade --team1 "Alex" --team2 "Edmund" -n 2 -t 0.1
+echo "Running generate z scores for players"; python main.py values
 
 echo "Processing completed. Container will exit."

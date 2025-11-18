@@ -15,7 +15,8 @@ try:
     from game_picker_lib import (
         predict_all_player_probabilities,
         generate_weighted_game_samples,
-        save_predictions_to_db
+        save_predictions_to_db,
+        calculate_all_player_values
     )
     # NEW: Import the unified scraper library
     from scraper_lib import BasketballScraper
@@ -121,7 +122,7 @@ def parse_arguments():
     
     subparsers = parser.add_subparsers(dest='command', help='Available Commands', required=True)
 
-    # --- Command: scrape (NEW) ---
+    # --- Command: scrape ---
     parser_scrape = subparsers.add_parser(
         'scrape', 
         help='Scrape game logs or player data from Basketball-Reference'
@@ -142,7 +143,13 @@ def parse_arguments():
     # --- Command: availability ---
     parser_avail = subparsers.add_parser(
         'availability', 
-        help='Calculate and save player availability (Year=1)'
+        help='Calculate and save player availability (Season=1)'
+    )
+    
+    # --- Command: values (NEW) ---
+    parser_values = subparsers.add_parser(
+        'values', 
+        help='Calculate and save player values (Z-scores) for Real (2026) and Simulated (Season=1) data'
     )
 
     # --- Command: h2h ---
@@ -210,7 +217,7 @@ if __name__ == "__main__":
         sys.exit(1)
     
     try:
-        # --- COMMAND: SCRAPE (NEW) ---
+        # --- COMMAND: SCRAPE ---
         if args.command == 'scrape':
             if not args.birthdays and not args.years:
                 print("Error: Please specify what to scrape.", file=sys.stderr)
@@ -227,7 +234,7 @@ if __name__ == "__main__":
                 scraper.scrape_all_player_birthdays(session)
             
             if args.years:
-                # Sort years to scrape most recent first, just as a best practice
+                # Sort years to scrape most recent first
                 sorted_years = sorted(list(set(args.years)), reverse=True)
                 for year in sorted_years:
                     scraper.scrape_game_logs_for_season(session, year)
@@ -236,11 +243,11 @@ if __name__ == "__main__":
 
         # --- COMMAND: AVAILABILITY ---
         elif args.command == 'availability':
-            print(f"Calculating probabilities using weights: {SIM_YEAR_WEIGHTS}")
+            print(f"Calculating probabilities using weights: {AVAILABILITY_SIM_YEAR_WEIGHTS}")
             
             all_probs = predict_all_player_probabilities(
                 session,
-                SIM_YEAR_WEIGHTS,
+                AVAILABILITY_SIM_YEAR_WEIGHTS,
                 PRIOR_PLAY_PERCENTAGE,
                 PRIOR_STRENGTH_IN_GAMES
             )
@@ -258,6 +265,10 @@ if __name__ == "__main__":
                     print(f"{pid:<15} : {prob:.1%}")
             else:
                 print("No probability data generated.")
+        
+        # --- COMMAND: VALUES (NEW) ---
+        elif args.command == 'values':
+            calculate_all_player_values(session)
 
         # --- COMMAND: H2H or TRADE (Simulation Logic) ---
         elif args.command in ('h2h', 'trade'):
