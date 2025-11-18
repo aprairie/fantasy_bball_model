@@ -12,12 +12,6 @@ python database.py
 
 # echo "figuring out main.py options"; python main.py
 
-# echo "Starting scraper"
-# python scraper.py
-
-# echo "Starting birthday scraper"
-# python birthday_scraper.py
-
 # echo "Starting model"
 # python model.py
 
@@ -40,8 +34,10 @@ python database.py
 # echo "Trial run of teams and players"
 # python trial_run_teams_and_players.py
 
-echo "Printing Player availabilities and saving to DB"; python main.py availability
-echo "Trial run of Head to Head Matchups"; python main.py h2h
-echo "Trial run of Trade Simulation"; python main.py trade --team1 "Alex" --team2 "Edmund" -n 2 -t 0.1
+# echo "Scraping birthdays and saving to db"; python main.py scrape --birthdays
+echo "Scraping game stats and saving to db"; python main.py scrape --years 2018 2019
+# echo "Printing Player availabilities and saving to DB"; python main.py availability
+# echo "Trial run of Head to Head Matchups"; python main.py h2h
+# echo "Trial run of Trade Simulation"; python main.py trade --team1 "Alex" --team2 "Edmund" -n 2 -t 0.1
 
 echo "Processing completed. Container will exit."

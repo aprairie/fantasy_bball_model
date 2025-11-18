@@ -4,9 +4,10 @@ import argparse
 import sys
 from typing import Dict, List, Set
 from sqlalchemy.orm import Session
+from sqlalchemy import exc
 
 # --- Library Imports ---
-import analysis_lib as analysis 
+import analysis_lib as analysis
 
 try:
     from database import SessionLocal, init_db, Player, GameStats
@@ -16,14 +17,16 @@ try:
         generate_weighted_game_samples,
         save_predictions_to_db
     )
+    # NEW: Import the unified scraper library
+    from scraper_lib import BasketballScraper
 except ImportError as e:
     print(f"FATAL ERROR: Could not import libraries: {e}")
-    print("Ensure database.py, teams_and_players_lib.py, game_picker_lib.py, and analysis_lib.py are present.")
+    print("Ensure database.py, teams_and_players_lib.py, game_picker_lib.py, analysis_lib.py, and scraper_lib.py are present.")
     sys.exit(1)
 
 # --- Simulation Configuration ---
 N_GAMES_TO_GENERATE = 10000
-N_SIM_WEEKS = 5000 
+N_SIM_WEEKS = 5000
 SIM_YEAR_WEIGHTS = [(2026, 1.2), (2025, 0.2), (2024, 0.1)]
 PRIOR_PLAY_PERCENTAGE = 0.85
 PRIOR_STRENGTH_IN_GAMES = 82.0
@@ -40,8 +43,6 @@ def get_all_player_game_pools(
     start_time = time.time()
     
     print("Calculating player availability...")
-    # Note: For simulation, we calculate on the fly. 
-    # If you want to use stored DB values, you'd query PlayerSeasonValue here instead.
     availability_map = predict_all_player_probabilities(
         session,
         SIM_YEAR_WEIGHTS,
@@ -117,21 +118,77 @@ def parse_arguments():
         formatter_class=argparse.RawTextHelpFormatter
     )
     
-    subparsers = parser.add_subparsers(dest='command', help='Available Commands')
+    subparsers = parser.add_subparsers(dest='command', help='Available Commands', required=True)
 
-    # Command: availability
-    parser_avail = subparsers.add_parser('availability', help='Calculate and save player availability (Year=1)')
+    # --- Command: scrape (NEW) ---
+    parser_scrape = subparsers.add_parser(
+        'scrape', 
+        help='Scrape game logs or player data from Basketball-Reference'
+    )
+    parser_scrape.add_argument(
+        '--birthdays', 
+        action='store_true', 
+        help='Scrape missing player birth dates.'
+    )
+    parser_scrape.add_argument(
+        '--years', 
+        nargs='+', 
+        type=int, 
+        metavar='YYYY',
+        help='A list of years (e.g., 2026 2025) to scrape game logs for.'
+    )
 
-    # Command: h2h
-    parser_h2h = subparsers.add_parser('h2h', help='Run full league Head-to-Head analysis')
+    # --- Command: availability ---
+    parser_avail = subparsers.add_parser(
+        'availability', 
+        help='Calculate and save player availability (Year=1)'
+    )
 
-    # Command: trade
-    parser_trade = subparsers.add_parser('trade', help='Find optimal trades between two teams')
-    parser_trade.add_argument('--team1', required=True, type=str, help='Name of the first team (The Improver)')
-    parser_trade.add_argument('--team2', required=True, type=str, help='Name of the second team (The Partner)')
-    parser_trade.add_argument('-n', '--num', type=int, default=2, help='Number of players to trade per side (default: 2)')
-    parser_trade.add_argument('-t', '--tolerance', type=float, default=0.05, help='Loss tolerance for Team 2 (default: 0.05)')
-    parser_trade.add_argument('--injured', action='store_true', help='Allow trading injured players')
+    # --- Command: h2h ---
+    parser_h2h = subparsers.add_parser(
+        'h2h', 
+        help='Run full league Head-to-Head analysis'
+    )
+
+    # --- Command: trade ---
+    parser_trade = subparsers.add_parser(
+        'trade', 
+        help='Find optimal trades between two teams'
+    )
+    parser_trade.add_argument(
+        '--team1', 
+        required=True, 
+        type=str, 
+        help='Name of the first team (The Improver)'
+    )
+    parser_trade.add_argument(
+        '--team2', 
+        required=True, 
+        type=str, 
+        help='Name of the second team (The Partner)'
+    )
+    parser_trade.add_argument(
+        '-n', '--num', 
+        type=int, 
+        default=2, 
+        help='Number of players to trade per side (default: 2)'
+    )
+    parser_trade.add_argument(
+        '-t', '--tolerance', 
+        type=float, 
+        default=0.05, 
+        help='Loss tolerance for Team 2 (default: 0.05)'
+    )
+    parser_trade.add_argument(
+        '--injured', 
+        action='store_true', 
+        help='Allow trading injured players'
+    )
+
+    # Handle case where no command is given
+    if len(sys.argv) == 1:
+        parser.print_help(sys.stderr)
+        sys.exit(1)
 
     return parser.parse_args(), parser
 
@@ -140,23 +197,44 @@ def parse_arguments():
 if __name__ == "__main__":
     args, parser = parse_arguments()
 
-    # If no command is provided, print help and exit
-    if not args.command:
-        parser.print_help()
-        sys.exit(1)
-
     print(f"--- Starting Fantasy League Simulator (Mode: {args.command.upper()}) ---")
     
+    session = None
     try:
         session = SessionLocal()
         init_db()
+        print("Database connection successful.")
     except Exception as e:
         print(f"Database connection failed: {e}")
         sys.exit(1)
     
     try:
+        # --- COMMAND: SCRAPE (NEW) ---
+        if args.command == 'scrape':
+            if not args.birthdays and not args.years:
+                print("Error: Please specify what to scrape.", file=sys.stderr)
+                # Find the 'scrape' subparser and print its help
+                for action in parser._actions:
+                    if isinstance(action, argparse._SubParsersAction):
+                        action.choices['scrape'].print_help()
+                        break
+                sys.exit(1)
+            
+            scraper = BasketballScraper()
+            
+            if args.birthdays:
+                scraper.scrape_all_player_birthdays(session)
+            
+            if args.years:
+                # Sort years to scrape most recent first, just as a best practice
+                sorted_years = sorted(list(set(args.years)), reverse=True)
+                for year in sorted_years:
+                    scraper.scrape_game_logs_for_season(session, year)
+            
+            print("--- Scraping command finished. ---")
+
         # --- COMMAND: AVAILABILITY ---
-        if args.command == 'availability':
+        elif args.command == 'availability':
             print(f"Calculating probabilities using weights: {SIM_YEAR_WEIGHTS}")
             
             all_probs = predict_all_player_probabilities(
@@ -166,7 +244,6 @@ if __name__ == "__main__":
                 PRIOR_STRENGTH_IN_GAMES
             )
             
-            # Save to DB with override
             if all_probs:
                 save_predictions_to_db(session, all_probs)
                 
@@ -182,7 +259,7 @@ if __name__ == "__main__":
                 print("No probability data generated.")
 
         # --- COMMAND: H2H or TRADE (Simulation Logic) ---
-        else:
+        elif args.command in ('h2h', 'trade'):
             # 1. Load Data
             rosters_map = get_league_rosters()
             if not rosters_map:
@@ -192,13 +269,13 @@ if __name__ == "__main__":
             if args.command == 'trade':
                 valid_teams = set(rosters_map.keys())
                 if args.team1 not in valid_teams:
-                    print(f"Error: '{args.team1}' is not a valid team.")
+                    print(f"Error: '{args.team1}' is not a valid team.", file=sys.stderr)
                     sys.exit(1)
                 if args.team2 not in valid_teams:
-                    print(f"Error: '{args.team2}' is not a valid team.")
+                    print(f"Error: '{args.team2}' is not a valid team.", file=sys.stderr)
                     sys.exit(1)
                 if args.team1 == args.team2:
-                    print("Error: Team 1 and Team 2 must be different.")
+                    print("Error: Team 1 and Team 2 must be different.", file=sys.stderr)
                     sys.exit(1)
 
             all_player_ids_set = set(pid for r in rosters_map.values() for pid, s in r)
@@ -240,9 +317,17 @@ if __name__ == "__main__":
                     n_sim_weeks=N_SIM_WEEKS
                 )
 
+    except exc.SQLAlchemyError as e:
+        print(f"A database error occurred: {e}")
+        if session:
+            session.rollback()
+        import traceback
+        traceback.print_exc()
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        session.close()
+        if session:
+            session.close()
+            print("\nDatabase session closed.")
