@@ -20,9 +20,12 @@ try:
     )
     # NEW: Import the unified scraper library
     from scraper_lib import BasketballScraper
+    # NEW: Import the print output library
+    from print_output_lib import export_player_stats_to_csv
+    
 except ImportError as e:
     print(f"FATAL ERROR: Could not import libraries: {e}")
-    print("Ensure database.py, teams_and_players_lib.py, game_picker_lib.py, analysis_lib.py, and scraper_lib.py are present.")
+    print("Ensure database.py, teams_and_players_lib.py, game_picker_lib.py, analysis_lib.py, scraper_lib.py and print_output_lib.py are present.")
     sys.exit(1)
 
 # --- Simulation Configuration ---
@@ -146,10 +149,16 @@ def parse_arguments():
         help='Calculate and save player availability (Season=1)'
     )
     
-    # --- Command: values (NEW) ---
+    # --- Command: values ---
     parser_values = subparsers.add_parser(
         'values', 
         help='Calculate and save player values (Z-scores) for Real (2026) and Simulated (Season=1) data'
+    )
+    
+    # --- Command: export (NEW) ---
+    parser_export = subparsers.add_parser(
+        'export', 
+        help='Export calculated player stats to CSV (prints to stdout)'
     )
 
     # --- Command: h2h ---
@@ -205,15 +214,20 @@ def parse_arguments():
 if __name__ == "__main__":
     args, parser = parse_arguments()
 
-    print(f"--- Starting Fantasy League Simulator (Mode: {args.command.upper()}) ---")
+    # Don't print start banners if exporting, to keep CSV clean
+    if args.command != 'export':
+        print(f"--- Starting Fantasy League Simulator (Mode: {args.command.upper()}) ---")
     
     session = None
     try:
         session = SessionLocal()
         init_db()
-        print("Database connection successful.")
+        # Only print connection success if not exporting
+        if args.command != 'export':
+            print("Database connection successful.")
     except Exception as e:
-        print(f"Database connection failed: {e}")
+        # Errors always go to stderr so they don't corrupt the CSV
+        print(f"Database connection failed: {e}", file=sys.stderr)
         sys.exit(1)
     
     try:
@@ -221,7 +235,6 @@ if __name__ == "__main__":
         if args.command == 'scrape':
             if not args.birthdays and not args.years:
                 print("Error: Please specify what to scrape.", file=sys.stderr)
-                # Find the 'scrape' subparser and print its help
                 for action in parser._actions:
                     if isinstance(action, argparse._SubParsersAction):
                         action.choices['scrape'].print_help()
@@ -234,7 +247,6 @@ if __name__ == "__main__":
                 scraper.scrape_all_player_birthdays(session)
             
             if args.years:
-                # Sort years to scrape most recent first
                 sorted_years = sorted(list(set(args.years)), reverse=True)
                 for year in sorted_years:
                     scraper.scrape_game_logs_for_season(session, year)
@@ -254,30 +266,30 @@ if __name__ == "__main__":
             
             if all_probs:
                 save_predictions_to_db(session, all_probs)
-                
                 print("\n--- Top 5 Highest Availability ---")
                 sorted_probs = sorted(all_probs.items(), key=lambda x: x[1], reverse=True)
                 for pid, prob in sorted_probs[:5]:
                     print(f"{pid:<15} : {prob:.1%}")
-
                 print("\n--- Top 5 Lowest Availability ---")
                 for pid, prob in sorted_probs[-5:]:
                     print(f"{pid:<15} : {prob:.1%}")
             else:
                 print("No probability data generated.")
         
-        # --- COMMAND: VALUES (NEW) ---
+        # --- COMMAND: VALUES ---
         elif args.command == 'values':
             calculate_all_player_values(session)
 
-        # --- COMMAND: H2H or TRADE (Simulation Logic) ---
+        # --- COMMAND: EXPORT (NEW) ---
+        elif args.command == 'export':
+            export_player_stats_to_csv(session)
+
+        # --- COMMAND: H2H or TRADE ---
         elif args.command in ('h2h', 'trade'):
-            # 1. Load Data
             rosters_map = get_league_rosters()
             if not rosters_map:
                 raise Exception("Could not get league rosters.")
                 
-            # Validate Teams if in trade mode
             if args.command == 'trade':
                 valid_teams = set(rosters_map.keys())
                 if args.team1 not in valid_teams:
@@ -295,7 +307,6 @@ if __name__ == "__main__":
             player_map_query = session.query(Player.player_id, Player.name).all()
             id_to_name_map = {p.player_id: p.name for p in player_map_query}
             
-            # 2. Generate Simulation Data
             game_pools = get_all_player_game_pools(session, all_player_ids_set)
             player_weekly_stats_map = pre_simulate_player_weeks(
                 game_pools,
@@ -303,7 +314,6 @@ if __name__ == "__main__":
                 N_SIM_WEEKS
             )
 
-            # 3. Run Logic
             if args.command == 'h2h':
                 analysis.run_league_simulation(
                     rosters_map, player_weekly_stats_map, id_to_name_map, N_SIM_WEEKS
@@ -330,16 +340,18 @@ if __name__ == "__main__":
                 )
 
     except exc.SQLAlchemyError as e:
-        print(f"A database error occurred: {e}")
+        print(f"A database error occurred: {e}", file=sys.stderr)
         if session:
             session.rollback()
         import traceback
         traceback.print_exc()
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        print(f"An unexpected error occurred: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
     finally:
         if session:
             session.close()
-            print("\nDatabase session closed.")
+            # Only print closing message if not exporting
+            if args.command != 'export':
+                print("\nDatabase session closed.")

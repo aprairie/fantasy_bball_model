@@ -22,6 +22,8 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://bball_user:bball_password@db:5432/basketball_stats
+    volumes:
+      - .:/app/output
 
 volumes:
   postgres_data:
@@ -35,4 +37,3 @@ volumes:
 #    docker compose down
 # useful command, this dumps me into a sql terminal running inside the container
 #    docker compose exec db psql -U bball_user -d basketball_stats
-# 
