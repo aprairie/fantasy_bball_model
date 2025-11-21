@@ -35,14 +35,12 @@ python database.py
 # python trial_run_teams_and_players.py
 
 # echo "Scraping birthdays and saving to db"; python main.py scrape --birthdays
-echo "Scraping game stats and saving to db"; python main.py scrape --years 2026
+# echo "Scraping game stats and saving to db"; python main.py scrape --years 2026
 # echo "Printing Player availabilities and saving to DB"; python main.py availability
 # echo "Trial run of Head to Head Matchups"; python main.py h2h
-echo "Trial run of Trade Simulation"; python main.py trade --team1 "Alex" --team2 "David" -n 3 -t 0.0 --injured
+# echo "Trial run of Trade Simulation"; python main.py trade --team1 "Alex" --team2 "David" -n 3 -t 0.0 --injured
+echo "Trial run of Trade Simulation with Mandatory Players"; python main.py trade --team1 "Alex" --team2 "David" -n 2 -t 0.2 --injured --include "Ryan Rollins" "Zach Edey"
 # echo "Running generate z scores for players"; python main.py values
-
-
-# Note, before doing this, be careful!!!
 # echo "Exporting player stats to 'player_stats.csv'..."; python main.py export
 
 echo "Processing completed. Container will exit."

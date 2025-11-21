@@ -239,23 +239,35 @@ def find_trades(
     n: int,
     team1_name: str,
     team2_name: str,
-    rosters_map: Dict,
-    player_weekly_stats_map: Dict,
-    all_team_weekly_stats: Dict,
-    all_h2h_probs: Dict,
-    id_to_name_map: Dict,
+    rosters_map: dict,
+    player_weekly_stats_map: dict,
+    all_team_weekly_stats: dict,
+    all_h2h_probs: dict,
+    id_to_name_map: dict,
     team2_loss_tolerance: float = 0.0,
     allow_trading_injured: bool = True,
+    required_players: list[str] = None, # <--- NEW PARAMETER
     n_sim_weeks: int = 5000
 ):
     """
     Finds trades where Team 1 improves and Team 2's loss is within tolerance.
+    Enforces strict status matching (Drop-for-Drop, Inj-for-Inj) to maintain roster sizes.
     """
     print(f"\n--- Step 4: Finding best {n}-for-{n} trades for {team1_name} & {team2_name} ---")
     print(f"Config: T2 Tolerance = -{team2_loss_tolerance} | Allow Injured Trades = {allow_trading_injured}")
+    if required_players:
+        print(f"Required Players in trade: {[id_to_name_map.get(p, p) for p in required_players]}")
     
     t1_full_roster_tuples = rosters_map[team1_name]
     t2_full_roster_tuples = rosters_map[team2_name]
+
+    # 0. Build a Status Map for O(1) lookup
+    # We need to know the status of every player to enforce 1-for-1 status swapping
+    player_status_map = {}
+    for pid, status in t1_full_roster_tuples:
+        player_status_map[pid] = status
+    for pid, status in t2_full_roster_tuples:
+        player_status_map[pid] = status
     
     successful_trades = []
     team_names = sorted(list(rosters_map.keys()))
@@ -271,11 +283,13 @@ def find_trades(
             baseline_data[scenario][team2_name][other] = all_h2h_probs[(team2_name, other, scenario)]['overall']
 
     # 2. Identify TRADABLE players
+    # UPDATED: We must include DROP players in the combinations so they can be swapped 1-for-1
     def get_tradable_players(roster_tuples):
         tradable = []
         for pid, status in roster_tuples:
-            if status == 'DROP': continue
-            if not allow_trading_injured and status == 'INJ': continue
+            # Previously skipped DROP, now we include them but filter later
+            if not allow_trading_injured and status == 'INJ': 
+                continue
             tradable.append(pid)
         return tradable
 
@@ -302,18 +316,64 @@ def find_trades(
         for t2_players_out in t2_combos:
             
             checked_count += 1
-            is_trade_valid = True
-            trade_results_by_scenario = {}
-            
             if checked_count % 5000 == 0:
                  print(f" ... checked {checked_count}/{total_trades_to_check}")
 
+            # --- CHECK 1: Required Players ---
+            if required_players:
+                # The set of players in the trade (outgoing from T1 + outgoing from T2)
+                involved_players = set(t1_players_out) | set(t2_players_out)
+                # If strict subset logic is needed (all required must be present):
+                if not set(required_players).issubset(involved_players):
+                    continue
+
+            # --- CHECK 2: Status Symmetry (The "Bug" Fix) ---
+            # Ensure DROP are traded for DROP, and INJ for INJ (if allowed)
+            # This prevents a team from accidentally ending up with 14 active players or 12 active players
+            
+            t1_drops = sum(1 for p in t1_players_out if player_status_map.get(p) == 'DROP')
+            t2_drops = sum(1 for p in t2_players_out if player_status_map.get(p) == 'DROP')
+            
+            if t1_drops != t2_drops:
+                continue # Reject trade: Unbalanced Drop status
+
+            t1_inj = sum(1 for p in t1_players_out if player_status_map.get(p) == 'INJ')
+            t2_inj = sum(1 for p in t2_players_out if player_status_map.get(p) == 'INJ')
+            
+            if t1_inj != t2_inj:
+                continue # Reject trade: Unbalanced Injured status (e.g. 1 Healthy for 1 Injured)
+
+            # --- Simulation ---
+            is_trade_valid = True
+            trade_results_by_scenario = {}
+
             for scenario in scenarios_to_check:
-                t1_roster = filter_roster(t1_full_roster_tuples, is_full_strength=(scenario=="FullStrength"))
-                t2_roster = filter_roster(t2_full_roster_tuples, is_full_strength=(scenario=="FullStrength"))
+                # 1. Get current active rosters for this scenario
+                is_fs = (scenario == "FullStrength")
+                t1_active_base = filter_roster(t1_full_roster_tuples, is_full_strength=is_fs)
+                t2_active_base = filter_roster(t2_full_roster_tuples, is_full_strength=is_fs)
                 
-                t1_new_roster = [p for p in t1_roster if p not in t1_players_out] + list(t2_players_out)
-                t2_new_roster = [p for p in t2_roster if p not in t2_players_out] + list(t1_players_out)
+                # 2. Construct new active rosters
+                # Remove players leaving (only if they were currently active)
+                t1_new_roster = [p for p in t1_active_base if p not in t1_players_out]
+                t2_new_roster = [p for p in t2_active_base if p not in t2_players_out]
+                
+                # Add players entering (ONLY if they qualify for this scenario)
+                # This prevents adding a 'DROP' player to the active simulation list
+                for p in t2_players_out:
+                    status = player_status_map.get(p)
+                    # Logic mirrors filter_roster
+                    if is_fs:
+                        if status != 'DROP': t1_new_roster.append(p)
+                    else:
+                        if status != 'INJ': t1_new_roster.append(p)
+
+                for p in t1_players_out:
+                    status = player_status_map.get(p)
+                    if is_fs:
+                        if status != 'DROP': t2_new_roster.append(p)
+                    else:
+                        if status != 'INJ': t2_new_roster.append(p)
                 
                 # Fast Sim
                 t1_new_weeks = build_team_weeks_from_players(t1_new_roster, player_weekly_stats_map, n_sim_weeks)

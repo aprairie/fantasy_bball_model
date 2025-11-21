@@ -201,6 +201,12 @@ def parse_arguments():
         action='store_true', 
         help='Allow trading injured players'
     )
+    # --- NEW ARGUMENT: --include ---
+    parser_trade.add_argument(
+        '--include',
+        nargs='+',
+        help='List of player names that MUST be in the trade (e.g. "LeBron James")'
+    )
 
     # Handle case where no command is given
     if len(sys.argv) == 1:
@@ -325,6 +331,21 @@ if __name__ == "__main__":
                     rosters_map, player_weekly_stats_map, id_to_name_map, N_SIM_WEEKS
                 )
                 
+                # --- Logic to Handle Required Players (Name -> ID) ---
+                required_ids = []
+                if args.include:
+                    # Create case-insensitive lookup: name.lower() -> player_id
+                    name_to_id_map = {p.name.lower(): p.player_id for p in player_map_query}
+                    
+                    print(f"\nFiltering for trades including: {args.include}")
+                    for name in args.include:
+                        clean_name = name.strip().lower()
+                        found_id = name_to_id_map.get(clean_name)
+                        if found_id:
+                            required_ids.append(found_id)
+                        else:
+                            print(f"WARNING: Could not find player '{name}' in database. They will be ignored.")
+                
                 analysis.find_trades(
                     n=args.num,
                     team1_name=args.team1,
@@ -336,6 +357,7 @@ if __name__ == "__main__":
                     id_to_name_map=id_to_name_map,
                     team2_loss_tolerance=args.tolerance,
                     allow_trading_injured=args.injured,
+                    required_players=required_ids, # <-- Passed here
                     n_sim_weeks=N_SIM_WEEKS
                 )
 
