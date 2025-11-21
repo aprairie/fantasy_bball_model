@@ -4,16 +4,16 @@ Alex,Derrick White,
 Alex,Paul George,
 Alex,Dillon Brooks,
 Alex,Michael Porter Jr.,
-Alex,Moses Moody,DROP
+Alex,Moussa Diabate,DROP
 Alex,Pascal Siakam,
 Alex,Zach Edey,DROP
 Alex,Ryan Kalkbrenner,
-Alex,Domantas Sabonis,
+Alex,Domantas Sabonis,INJ
 Alex,Joel Embiid,
 Alex,Keegan Murray,
 Alex,Kristaps Porzingis,
 Alex,Kyrie Irving,INJ
-Alex,Trae Young,INJ
+Alex,Trae Young,
 Jenny,LaMelo Ball,
 Jenny,Dennis Schroder,DROP
 Jenny,Tyrese Maxey,
@@ -37,7 +37,7 @@ Edmund,Kyshawn George,
 Edmund,Nikola Vucevic,
 Edmund,Deandre Ayton,
 Edmund,John Collins,
-Edmund,Rui Hachimura,DROP
+Edmund,Andre Drummond,DROP
 Edmund,Josh Giddey,
 Edmund,Andrew Nembhard,
 Edmund,Scottie Barnes,
@@ -47,7 +47,7 @@ Edmund,Jalen Green,INJ
 Casper,Donte DiVincenzo,
 Casper,Anthony Edwards,
 Casper,James Harden,
-Casper,OG Anunoby,
+Casper,OG Anunoby,INJ
 Casper,Jabari Smith Jr.,
 Casper,Nickeil Alexander-Walker,
 Casper,Myles Turner,
@@ -55,12 +55,13 @@ Casper,Derik Queen,DROP
 Casper,Kon Knueppel,
 Casper,Jalen Johnson,
 Casper,Jeremiah Fears,
-Casper,Tre Jones,DROP
+Casper,Toumani Camara,DROP
 Casper,Onyeka Okongwu,
 Casper,Brandon Miller,INJ
-Casper,Bam Adebayo,INJ
+Casper,Bam Adebayo,
 Alec,Jalen Brunson,
-Alec,Stephon Castle,
+Alec,Cameron Johnson,
+Alec,Stephon Castle,INJ
 Alec,Zach LaVine,
 Alec,Jimmy Butler III,
 Alec,Jerami Grant,
@@ -79,27 +80,27 @@ David,Jalen Suggs,
 David,Desmond Bane,
 David,Jaren Jackson Jr.,
 David,Aaron Gordon,
-David,Mark Williams,
+David,Mark Williams,DROP
 David,Naz Reid,
-David,Reed Sheppard,DROP
-David,Tari Eason,DROP
+David,Devin Vassell,DROP
+David,Jaylon Tyson,INJ
 David,Kevin Durant,
 David,Herbert Jones,
 David,P.J. Washington,
-David,Coby White,INJ
+David,Coby White,
 David,Cam Thomas,INJ
 Simon,Devin Booker,
 Simon,Jaylen Brown,
 Simon,Brandon Ingram,
 Simon,Deni Avdija,
 Simon,RJ Barrett,
-Simon,Paolo Banchero,
+Simon,Paolo Banchero,INJ
 Simon,Ivica Zubac,
 Simon,Kel'el Ware,
 Simon,Ausar Thompson,
 Simon,Karl-Anthony Towns,
 Simon,Darius Garland,INJ
-Simon,Bennedict Mathurin,INJ
+Simon,Bennedict Mathurin,
 Simon,Jakob Poeltl,
 Simon,Neemias Queta,DROP
 Simon,Naji Marshall,DROP
@@ -125,14 +126,14 @@ Drodge,DeMar DeRozan,
 Drodge,Mikal Bridges,
 Drodge,Cooper Flagg,
 Drodge,Rudy Gobert,
-Drodge,Nic Claxton,
+Drodge,Nic Claxton,DROP
 Drodge,Cade Cunningham,
 Drodge,CJ McCollum,
-Drodge,Grayson Allen,
-Drodge,Royce O'Neale,DROP
-Drodge,Cason Wallace,DROP
-Drodge,Lebron James,INJ
-Drodge,Dereck Lively II,INJ
+Drodge,Grayson Allen,INJ
+Drodge,Tobias Harris,INJ
+Drodge,Daniel Gafford,DROP
+Drodge,Lebron James,
+Drodge,Dereck Lively II,
 Ben,Brandin Podziemski,
 Ben,Shaedon Sharpe,
 Ben,Payton Pritchard,
