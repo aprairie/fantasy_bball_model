@@ -1,33 +1,29 @@
 """
-League Roster Importer Library
+League Roster Importer Library & Free Agent Finder
 
-This library reads the 'league_rosters.csv' file, connects to the
-database to get a map of all players, and then uses fuzzy matching
-to map the CSV player names to the database player IDs.
+1. Reads 'teams_and_players.csv' to map players to DB IDs.
+2. Provides clean rosters for analysis (excluding DEAD).
+3. Identifies legitimate Free Agents (excluding DEAD and Active Rosters).
 """
 
 import csv
 from typing import Dict, List, Tuple, Optional
+from sqlalchemy import func
 
 # Imports from your database file
 try:
-    from database import SessionLocal, Player
+    from database import SessionLocal, Player, GameStats
 except ImportError:
     print("FATAL ERROR: 'database.py' not found.")
     print("Please ensure 'database.py' is in the same directory.")
     exit(1)
 
-# File to read from
 ROSTER_CSV_FILE = 'teams_and_players.csv'
-# Edit distance threshold. If the best match is worse than this,
-# it's probably not the right player. (We still take it, but a high
-# distance log might indicate a bad typo).
 FUZZY_MATCH_THRESHOLD = 5 
 
 def _levenshtein_distance(s1: str, s2: str) -> int:
     """
     Calculates the Levenshtein (edit) distance between two strings.
-    A simple, non-optimized implementation.
     """
     if len(s1) < len(s2):
         return _levenshtein_distance(s2, s1)
@@ -48,19 +44,17 @@ def _levenshtein_distance(s1: str, s2: str) -> int:
     return previous_row[-1]
 
 
-def get_league_rosters() -> Dict[str, List[Tuple[str, Optional[str]]]]:
+def _read_roster_csv() -> Dict[str, List[Tuple[str, Optional[str]]]]:
     """
-    Reads 'league_rosters.csv' and maps players to DB player IDs.
-
-    Returns:
-        A dictionary of:
-        { team_name: [(player_id_string, status), ...] }
+    INTERNAL HELPER: Reads the CSV and returns a dictionary of ALL teams,
+    including the 'DEAD' team. 
+    
+    Used by both public functions to ensure consistent data loading.
     """
-    print("--- Starting Roster Import ---")
+    print(f"--- Reading {ROSTER_CSV_FILE} ---")
     session = SessionLocal()
     
     # 1. Build the player map from the database
-    # { "Derrick White": "whitede01", "Paul George": "georgpa01", ... }
     name_to_id_map = {}
     try:
         all_players = session.query(Player.name, Player.player_id).all()
@@ -72,40 +66,39 @@ def get_league_rosters() -> Dict[str, List[Tuple[str, Optional[str]]]]:
         session.close()
         return {}
     
-    print(f"Loaded {len(name_to_id_map)} players from database.")
-    
     # 2. Process the CSV and perform matching
-    league_rosters_map = {}
+    raw_rosters_map = {}
     
     try:
         with open(ROSTER_CSV_FILE, mode='r', encoding='utf-8') as f:
             reader = csv.reader(f)
             
-            # Skip header row
-            try:
-                next(reader)
-            except StopIteration:
-                print("CSV file is empty.")
-                return {}
-
+            # Handle potential header
+            header = next(reader, None)
+            if header and "Team" not in header[0] and "Alex" in header[0]:
+                 f.seek(0)
+            
             for row in reader:
                 if not row or len(row) < 2:
                     continue
                     
-                team = row[0]
+                team = row[0].strip()
                 csv_player_name = row[1].strip()
                 status = row[2].strip() if len(row) > 2 and row[2] else None
+
+                if team == "Team" and csv_player_name == "Player":
+                    continue
 
                 if not csv_player_name:
                     continue
 
                 player_id_string = None
                 
-                # Step 2a: Try for an exact match
+                # Exact Match
                 if csv_player_name in name_to_id_map:
                     player_id_string = name_to_id_map[csv_player_name]
                 else:
-                    # Step 2b: No exact match, run fuzzy matching
+                    # Fuzzy Match
                     min_dist = float('inf')
                     best_match_name = None
                     
@@ -115,23 +108,17 @@ def get_league_rosters() -> Dict[str, List[Tuple[str, Optional[str]]]]:
                             min_dist = dist
                             best_match_name = db_name
                     
-                    if best_match_name:
+                    if best_match_name and min_dist <= FUZZY_MATCH_THRESHOLD:
                         player_id_string = name_to_id_map[best_match_name]
-                        # This is the log line you requested
-                        print(
-                            f"LOG: No exact match for '{csv_player_name}'. "
-                            f"Best match (dist={min_dist}): '{best_match_name}' "
-                            f"(ID: {player_id_string})"
-                        )
+                        # Optional: print(f"LOG: Fuzzy match '{csv_player_name}' -> '{best_match_name}'")
                     else:
                         print(f"ERROR: Failed to find any match for '{csv_player_name}'. Skipping.")
                         continue
 
-                # Step 2c: Add the matched player to the final map
-                if team not in league_rosters_map:
-                    league_rosters_map[team] = []
+                if team not in raw_rosters_map:
+                    raw_rosters_map[team] = []
                 
-                league_rosters_map[team].append( (player_id_string, status) )
+                raw_rosters_map[team].append( (player_id_string, status) )
 
     except FileNotFoundError:
         print(f"FATAL ERROR: '{ROSTER_CSV_FILE}' not found.")
@@ -143,5 +130,78 @@ def get_league_rosters() -> Dict[str, List[Tuple[str, Optional[str]]]]:
         return {}
 
     session.close()
-    print("--- Roster Import Complete ---")
-    return league_rosters_map
+    return raw_rosters_map
+
+
+def get_league_rosters() -> Dict[str, List[Tuple[str, Optional[str]]]]:
+    """
+    Public function to get active league rosters.
+    
+    IMPORTANT: This EXCLUDES the 'DEAD' team to prevent analysis issues.
+    """
+    # Get everything
+    all_rosters = _read_roster_csv()
+    
+    # Remove DEAD team if it exists
+    if "DEAD" in all_rosters:
+        del all_rosters["DEAD"]
+        
+    print(f"--- Roster Import Complete (DEAD team excluded) ---")
+    return all_rosters
+
+
+def get_available_free_agents() -> List[str]:
+    """
+    Finds all players in the database who have played at least one game
+    in 2025 or 2026.
+    
+    It REMOVES:
+    1. Players on active rosters.
+    2. Players on the 'DEAD' team.
+    
+    Returns:
+        List[str]: A list of player_ids (e.g. ['jamesle01', ...])
+    """
+    print("--- Identifying Available Free Agents ---")
+    
+    # 1. Get ALL rostered players (including DEAD) to ensure we don't pick them
+    all_rosters = _read_roster_csv() # Calls the helper directly to get DEAD team too
+    
+    unavailable_players = set()
+    for team, players in all_rosters.items():
+        for player_id, status in players:
+            if player_id:
+                unavailable_players.add(player_id)
+
+    print(f"Found {len(unavailable_players)} unavailable players (Active + DEAD).")
+
+    # 2. Query DB for players active in 2025/2026
+    session = SessionLocal()
+    available_free_agents = []
+    
+    try:
+        # Query GameStats for seasons 2025/2026
+        query = (
+            session.query(Player.player_id)
+            .join(GameStats)
+            .filter(GameStats.season.in_([2025, 2026]))
+            .distinct()
+        )
+        
+        active_db_results = query.all()
+        
+        # 3. Filter out unavailable players
+        for row in active_db_results:
+            pid = row[0]
+            if pid and pid not in unavailable_players:
+                available_free_agents.append(pid)
+                
+        print(f"Total active players in DB (2025/26): {len(active_db_results)}")
+        print(f"Total Free Agents (Active DB - Unavailable): {len(available_free_agents)}")
+        
+    except Exception as e:
+        print(f"Error querying free agents: {e}")
+    finally:
+        session.close()
+
+    return available_free_agents

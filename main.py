@@ -4,14 +4,16 @@ import argparse
 import sys
 from typing import Dict, List, Set
 from sqlalchemy.orm import Session
-from sqlalchemy import exc
+from sqlalchemy import exc, desc # Added desc
 
 # --- Library Imports ---
 import analysis_lib as analysis
 
 try:
-    from database import SessionLocal, init_db, Player, GameStats
-    from teams_and_players_lib import get_league_rosters
+    # Added PlayerSeasonValue
+    from database import SessionLocal, init_db, Player, GameStats, PlayerSeasonValue
+    # Added get_available_free_agents
+    from teams_and_players_lib import get_league_rosters, get_available_free_agents
     from game_picker_lib import (
         predict_all_player_probabilities,
         generate_weighted_game_samples,
@@ -301,19 +303,53 @@ if __name__ == "__main__":
                 if args.team1 not in valid_teams:
                     print(f"Error: '{args.team1}' is not a valid team.", file=sys.stderr)
                     sys.exit(1)
-                if args.team2 not in valid_teams:
+                
+                # --- MODIFICATION: Allow 'FreeAgents' as a valid team2 ---
+                if args.team2 not in valid_teams and args.team2 != "FreeAgents":
                     print(f"Error: '{args.team2}' is not a valid team.", file=sys.stderr)
                     sys.exit(1)
+                    
                 if args.team1 == args.team2:
                     print("Error: Team 1 and Team 2 must be different.", file=sys.stderr)
                     sys.exit(1)
 
+            # Get all currently rostered players
             all_player_ids_set = set(pid for r in rosters_map.values() for pid, s in r)
             
+            # --- CRITICAL UPDATE: If trading with FreeAgents, include them in the simulation set! ---
+            if args.command == 'trade' and args.team2 == "FreeAgents":
+                print("Trade Target: Free Agents. Adding Top 30 FA to simulation pool...")
+                try:
+                    # Get Available Free Agent IDs (String format)
+                    fa_ids = get_available_free_agents()
+                    
+                    # Rank them by total_score to get the Top 30
+                    # This ensures we only simulate relevant free agents, saving time
+                    top_fa_query = (
+                        session.query(Player.player_id)
+                        .join(PlayerSeasonValue, Player.id == PlayerSeasonValue.player_id)
+                        .filter(PlayerSeasonValue.season == 2025)
+                        .filter(Player.player_id.in_(fa_ids))
+                        .order_by(desc(PlayerSeasonValue.total_score))
+                        .limit(30)
+                        .all()
+                    )
+                    
+                    top_fa_ids = [r.player_id for r in top_fa_query]
+                    print(f"Added {len(top_fa_ids)} Free Agents to simulation.")
+                    all_player_ids_set.update(top_fa_ids)
+                    
+                except Exception as e:
+                    print(f"Warning: Could not fetch Free Agents for simulation: {e}")
+
+            # Now get player map (for names)
             player_map_query = session.query(Player.player_id, Player.name).all()
             id_to_name_map = {p.player_id: p.name for p in player_map_query}
             
+            # Generate Game Pools (Now includes FAs if applicable)
             game_pools = get_all_player_game_pools(session, all_player_ids_set)
+            
+            # Generate Weekly Stats (Now includes FAs if applicable)
             player_weekly_stats_map = pre_simulate_player_weeks(
                 game_pools,
                 all_player_ids_set,

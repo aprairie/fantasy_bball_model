@@ -1,6 +1,8 @@
 import time
+import random
 from typing import Dict, List, Tuple, Optional, Set
 from itertools import combinations
+from sqlalchemy import desc
 
 # --- Constants ---
 EXPECTED_ROSTER_SIZE = 13
@@ -186,8 +188,6 @@ def run_league_simulation(
             scenario = "FullStrength" if is_full_strength else "Current"
             active_roster = filter_roster(team_full_roster, is_full_strength)
             
-            # Optional: Check roster size here if desired, removed for brevity in lib file
-            
             weekly_stats_list = build_team_weeks_from_players(
                 active_roster,
                 player_weekly_stats_map,
@@ -246,23 +246,146 @@ def find_trades(
     id_to_name_map: dict,
     team2_loss_tolerance: float = 0.0,
     allow_trading_injured: bool = True,
-    required_players: list[str] = None, # <--- NEW PARAMETER
+    required_players: list[str] = None, 
     n_sim_weeks: int = 5000
 ):
     """
-    Finds trades where Team 1 improves and Team 2's loss is within tolerance.
-    Enforces strict status matching (Drop-for-Drop, Inj-for-Inj) to maintain roster sizes.
+    Finds trades where Team 1 improves.
+    If team2 is "FreeAgents", picks top 30 FAs by Year 1 Z-Score and ignores team2 improvement criteria.
     """
+    
+    # --- IMPORTS FOR FREE AGENT LOGIC ---
+    try:
+        from database import SessionLocal, PlayerSeasonValue, Player # Added Player import
+        from teams_and_players_lib import get_available_free_agents
+        # --- NEW IMPORTS FOR ON-THE-FLY SIMULATION ---
+        from game_picker_lib import (
+            predict_all_player_probabilities,
+            generate_weighted_game_samples
+        )
+    except ImportError:
+        print("FATAL ERROR: Missing database.py, teams_and_players_lib.py or game_picker_lib.py for trade finder.")
+        return
+
     print(f"\n--- Step 4: Finding best {n}-for-{n} trades for {team1_name} & {team2_name} ---")
-    print(f"Config: T2 Tolerance = -{team2_loss_tolerance} | Allow Injured Trades = {allow_trading_injured}")
-    if required_players:
-        print(f"Required Players in trade: {[id_to_name_map.get(p, p) for p in required_players]}")
     
     t1_full_roster_tuples = rosters_map[team1_name]
-    t2_full_roster_tuples = rosters_map[team2_name]
+    
+    # --- FREE AGENT HANDLING ---
+    if team2_name == "FreeAgents":
+        print("Targeting FREE AGENTS. Fetching top 30 available players by Z-Score...")
+        session = SessionLocal()
+        try:
+            # 1. Get IDs (Strings)
+            fa_ids = get_available_free_agents()
+            
+            # 2. Rank by total_score (Year 1 / 2025)
+            top_fa_query = (
+                session.query(Player.player_id, PlayerSeasonValue.total_score)
+                .join(PlayerSeasonValue, Player.id == PlayerSeasonValue.player_id)
+                .filter(PlayerSeasonValue.season == 2025)
+                .filter(Player.player_id.in_(fa_ids))
+                .order_by(desc(PlayerSeasonValue.total_score))
+                .limit(30)
+                .all()
+            )
+            
+            top_fa_ids = [r.player_id for r in top_fa_query]
+            print(f"Top Free Agents found: {len(top_fa_ids)}")
+            ids = [r.player_id for r in top_fa_query]
+            
+            # --- NEW STEP 2.5: HYDRATE FREE AGENT STATS ---
+            # Check if these players are missing from player_weekly_stats_map
+            missing_stats_ids = [pid for pid in top_fa_ids if pid not in player_weekly_stats_map or not player_weekly_stats_map[pid]]
+            
+            if missing_stats_ids:
+                print(f"Generating stats for {len(missing_stats_ids)} free agents...")
+                
+                # Constants used in main.py
+                SIM_YEAR_WEIGHTS = [(2026, 1.2), (2025, 0.2), (2024, 0.1)]
+                AVAILABILITY_SIM_YEAR_WEIGHTS = [(2026, 1), (2025, 1), (2024, 1)]
+                PRIOR_PLAY_PERCENTAGE = 0.85
+                PRIOR_STRENGTH_IN_GAMES = 82.0
+                
+                # 1. Predict Availability
+                availability_map = predict_all_player_probabilities(
+                    session,
+                    AVAILABILITY_SIM_YEAR_WEIGHTS,
+                    PRIOR_PLAY_PERCENTAGE,
+                    PRIOR_STRENGTH_IN_GAMES
+                )
+                
+                # 2. Generate Game Samples
+                # NOTE: generate_weighted_game_samples expects a Session object
+                game_pools = generate_weighted_game_samples(
+                    session=session,
+                    player_ids=missing_stats_ids,
+                    num_games=1000, # Reduced from 10000 for speed since it's trade time
+                    year_weights=SIM_YEAR_WEIGHTS,
+                    availability_predictions=availability_map,
+                    include_dummy_games=True 
+                )
+                
+                # 3. Simulate Weeks
+                for pid in missing_stats_ids:
+                    player_pool = game_pools.get(pid)
+                    player_weeks = []
+                    
+                    if not player_pool:
+                        dummy_week = {key: 0.0 for key in ALL_STAT_KEYS}
+                        player_weekly_stats_map[pid] = [dummy_week] * n_sim_weeks
+                        continue
+                        
+                    for _ in range(n_sim_weeks):
+                        weekly_totals = {key: 0.0 for key in ALL_STAT_KEYS}
+                        # Simple 3 or 4 game logic from main.py
+                        num_games = 3 if random.random() < 0.5 else 4
+                        simulated_games = random.sample(player_pool, num_games)
+                        
+                        for game in simulated_games:
+                            weekly_totals['pts'] += (game.points or 0)
+                            weekly_totals['reb'] += (game.total_rebounds or 0)
+                            weekly_totals['ast'] += (game.assists or 0)
+                            weekly_totals['stl'] += (game.steals or 0)
+                            weekly_totals['blk'] += (game.blocks or 0)
+                            weekly_totals['tpm'] += (game.three_pointers or 0)
+                            weekly_totals['to'] += (game.turnovers or 0)
+                            weekly_totals['fga'] += (game.field_goal_attempts or 0)
+                            weekly_totals['fgm'] += (game.field_goals or 0)
+                            weekly_totals['fta'] += (game.free_throw_attempts or 0)
+                            weekly_totals['ftm'] += (game.free_throws or 0)
+                        
+                        player_weeks.append(weekly_totals)
+                    
+                    player_weekly_stats_map[pid] = player_weeks
+                
+                print("Free Agent stats generated successfully.")
+
+            # 3. Create dummy roster (Assume 'Active' status for FAs)
+            t2_full_roster_tuples = [(pid, 'Active') for pid in top_fa_ids]
+            
+            # 4. Inject dummy stats so simulation doesn't crash when looking up 'FreeAgents'
+            all_team_weekly_stats["FreeAgents"] = {
+                "FullStrength": [],
+                "Current": []
+            }
+            
+        except Exception as e:
+            print(f"Error fetching free agents: {e}")
+            import traceback
+            traceback.print_exc()
+            session.close()
+            return
+        finally:
+            session.close()
+    else:
+        t2_full_roster_tuples = rosters_map[team2_name]
+        print(f"Config: T2 Tolerance = -{team2_loss_tolerance} | Allow Injured Trades = {allow_trading_injured}")
+
+    if required_players:
+        print(f"Required Players in trade: {[id_to_name_map.get(p, p) for p in required_players]}")
 
     # 0. Build a Status Map for O(1) lookup
-    # We need to know the status of every player to enforce 1-for-1 status swapping
     player_status_map = {}
     for pid, status in t1_full_roster_tuples:
         player_status_map[pid] = status
@@ -271,25 +394,33 @@ def find_trades(
     
     successful_trades = []
     team_names = sorted(list(rosters_map.keys()))
-    other_team_names = [t for t in team_names if t not in [team1_name, team2_name]]
+    # Exclude involved teams from opponents list
+    other_team_names = [t for t in team_names if t not in [team1_name, team2_name] and t != "FreeAgents"]
     
     scenarios_to_check = ["FullStrength", "Current"]
 
     # 1. Calculate the baseline stats
     baseline_data = {s: {team1_name: {}, team2_name: {}} for s in scenarios_to_check}
+    
     for scenario in scenarios_to_check:
         for other in other_team_names:
-            baseline_data[scenario][team1_name][other] = all_h2h_probs[(team1_name, other, scenario)]['overall']
-            baseline_data[scenario][team2_name][other] = all_h2h_probs[(team2_name, other, scenario)]['overall']
+            # Team 1 Baseline
+            if (team1_name, other, scenario) in all_h2h_probs:
+                baseline_data[scenario][team1_name][other] = all_h2h_probs[(team1_name, other, scenario)]['overall']
+            
+            # Team 2 Baseline (Skip if FreeAgents)
+            if team2_name != "FreeAgents":
+                if (team2_name, other, scenario) in all_h2h_probs:
+                    baseline_data[scenario][team2_name][other] = all_h2h_probs[(team2_name, other, scenario)]['overall']
 
     # 2. Identify TRADABLE players
-    # UPDATED: We must include DROP players in the combinations so they can be swapped 1-for-1
     def get_tradable_players(roster_tuples):
         tradable = []
         for pid, status in roster_tuples:
-            # Previously skipped DROP, now we include them but filter later
-            if not allow_trading_injured and status == 'INJ': 
-                continue
+            if team2_name != "FreeAgents":
+                # Only enforce injury restrictions for real teams
+                if not allow_trading_injured and status == 'INJ': 
+                    continue
             tradable.append(pid)
         return tradable
 
@@ -321,27 +452,24 @@ def find_trades(
 
             # --- CHECK 1: Required Players ---
             if required_players:
-                # The set of players in the trade (outgoing from T1 + outgoing from T2)
                 involved_players = set(t1_players_out) | set(t2_players_out)
-                # If strict subset logic is needed (all required must be present):
                 if not set(required_players).issubset(involved_players):
                     continue
 
-            # --- CHECK 2: Status Symmetry (The "Bug" Fix) ---
-            # Ensure DROP are traded for DROP, and INJ for INJ (if allowed)
-            # This prevents a team from accidentally ending up with 14 active players or 12 active players
-            
-            t1_drops = sum(1 for p in t1_players_out if player_status_map.get(p) == 'DROP')
-            t2_drops = sum(1 for p in t2_players_out if player_status_map.get(p) == 'DROP')
-            
-            if t1_drops != t2_drops:
-                continue # Reject trade: Unbalanced Drop status
+            # --- CHECK 2: Status Symmetry ---
+            # Only apply this if trading with a real team. 
+            if team2_name != "FreeAgents":
+                t1_drops = sum(1 for p in t1_players_out if player_status_map.get(p) == 'DROP')
+                t2_drops = sum(1 for p in t2_players_out if player_status_map.get(p) == 'DROP')
+                
+                if t1_drops != t2_drops:
+                    continue 
 
-            t1_inj = sum(1 for p in t1_players_out if player_status_map.get(p) == 'INJ')
-            t2_inj = sum(1 for p in t2_players_out if player_status_map.get(p) == 'INJ')
-            
-            if t1_inj != t2_inj:
-                continue # Reject trade: Unbalanced Injured status (e.g. 1 Healthy for 1 Injured)
+                t1_inj = sum(1 for p in t1_players_out if player_status_map.get(p) == 'INJ')
+                t2_inj = sum(1 for p in t2_players_out if player_status_map.get(p) == 'INJ')
+                
+                if t1_inj != t2_inj:
+                    continue
 
             # --- Simulation ---
             is_trade_valid = True
@@ -351,33 +479,38 @@ def find_trades(
                 # 1. Get current active rosters for this scenario
                 is_fs = (scenario == "FullStrength")
                 t1_active_base = filter_roster(t1_full_roster_tuples, is_full_strength=is_fs)
-                t2_active_base = filter_roster(t2_full_roster_tuples, is_full_strength=is_fs)
+                # Team 2 simulation is only needed if it's a real team
+                t2_active_base = []
+                if team2_name != "FreeAgents":
+                    t2_active_base = filter_roster(t2_full_roster_tuples, is_full_strength=is_fs)
                 
                 # 2. Construct new active rosters
-                # Remove players leaving (only if they were currently active)
                 t1_new_roster = [p for p in t1_active_base if p not in t1_players_out]
-                t2_new_roster = [p for p in t2_active_base if p not in t2_players_out]
+                t2_new_roster = []
+                if team2_name != "FreeAgents":
+                    t2_new_roster = [p for p in t2_active_base if p not in t2_players_out]
                 
-                # Add players entering (ONLY if they qualify for this scenario)
-                # This prevents adding a 'DROP' player to the active simulation list
+                # Add players entering
                 for p in t2_players_out:
-                    status = player_status_map.get(p)
-                    # Logic mirrors filter_roster
+                    status = player_status_map.get(p, 'Active') # Default to Active for FAs
                     if is_fs:
                         if status != 'DROP': t1_new_roster.append(p)
                     else:
                         if status != 'INJ': t1_new_roster.append(p)
 
-                for p in t1_players_out:
-                    status = player_status_map.get(p)
-                    if is_fs:
-                        if status != 'DROP': t2_new_roster.append(p)
-                    else:
-                        if status != 'INJ': t2_new_roster.append(p)
+                if team2_name != "FreeAgents":
+                    for p in t1_players_out:
+                        status = player_status_map.get(p)
+                        if is_fs:
+                            if status != 'DROP': t2_new_roster.append(p)
+                        else:
+                            if status != 'INJ': t2_new_roster.append(p)
                 
                 # Fast Sim
                 t1_new_weeks = build_team_weeks_from_players(t1_new_roster, player_weekly_stats_map, n_sim_weeks)
-                t2_new_weeks = build_team_weeks_from_players(t2_new_roster, player_weekly_stats_map, n_sim_weeks)
+                t2_new_weeks = []
+                if team2_name != "FreeAgents":
+                    t2_new_weeks = build_team_weeks_from_players(t2_new_roster, player_weekly_stats_map, n_sim_weeks)
                 
                 # Stats containers
                 t1_deltas = {}
@@ -391,27 +524,35 @@ def find_trades(
                 for other in other_team_names:
                     other_weeks = all_team_weekly_stats[other][scenario]
                     
+                    # Calc Team 1
                     new_win_pct_1 = compare_n_weeks(t1_new_weeks, other_weeks)['overall']
-                    new_win_pct_2 = compare_n_weeks(t2_new_weeks, other_weeks)['overall']
-                    
-                    base_1 = baseline_data[scenario][team1_name][other]
-                    base_2 = baseline_data[scenario][team2_name][other]
-                    
+                    base_1 = baseline_data[scenario][team1_name].get(other, 0.5) # Default if missing
                     d1 = new_win_pct_1 - base_1
-                    d2 = new_win_pct_2 - base_2
-                    
                     t1_deltas[other] = d1
-                    t2_deltas[other] = d2
                     t1_new_vals[other] = new_win_pct_1
-                    t2_new_vals[other] = new_win_pct_2
-                    
                     t1_gain_sum += d1
-                    t2_gain_sum += d2
+                    
+                    # Calc Team 2 (Only if real team)
+                    if team2_name != "FreeAgents":
+                        new_win_pct_2 = compare_n_weeks(t2_new_weeks, other_weeks)['overall']
+                        base_2 = baseline_data[scenario][team2_name].get(other, 0.5)
+                        d2 = new_win_pct_2 - base_2
+                        t2_deltas[other] = d2
+                        t2_new_vals[other] = new_win_pct_2
+                        t2_gain_sum += d2
+                    else:
+                        t2_deltas[other] = 0.0
+                        t2_new_vals[other] = 0.0
 
                 # Check Criteria
-                if t1_gain_sum <= 0 or t2_gain_sum < -team2_loss_tolerance:
+                if t1_gain_sum <= 0:
                     is_trade_valid = False
-                    break 
+                    break
+                
+                if team2_name != "FreeAgents":
+                    if t2_gain_sum < -team2_loss_tolerance:
+                        is_trade_valid = False
+                        break 
                 
                 trade_results_by_scenario[scenario] = {
                     "t1_gain_sum": t1_gain_sum,
@@ -426,7 +567,9 @@ def find_trades(
                 combined_gain = 0
                 for scen in scenarios_to_check:
                     combined_gain += trade_results_by_scenario[scen]['t1_gain_sum']
-                    combined_gain += trade_results_by_scenario[scen]['t2_gain_sum']
+                    # Only add t2 gain if it's a real trade, otherwise we just maximize t1
+                    if team2_name != "FreeAgents":
+                        combined_gain += trade_results_by_scenario[scen]['t2_gain_sum']
                 
                 successful_trades.append({
                     "t1_gives": t1_players_out,
@@ -454,6 +597,10 @@ def find_trades(
         print(f"{'-'*85}")
 
         def print_team_table(team_name, is_team_1):
+            # If it's FreeAgents, skip printing the table (it's empty/meaningless)
+            if team_name == "FreeAgents":
+                return
+
             res_curr = trade['results']['Current']
             res_fs   = trade['results']['FullStrength']
             
