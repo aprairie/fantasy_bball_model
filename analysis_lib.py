@@ -252,6 +252,7 @@ def find_trades(
     """
     Finds trades where Team 1 improves.
     If team2 is "FreeAgents", picks top 30 FAs by Year 1 Z-Score and ignores team2 improvement criteria.
+    Includes the head-to-head performance between team1 and team2 in calculations and tables.
     """
     
     # --- IMPORTS FOR FREE AGENT LOGIC ---
@@ -403,6 +404,7 @@ def find_trades(
     baseline_data = {s: {team1_name: {}, team2_name: {}} for s in scenarios_to_check}
     
     for scenario in scenarios_to_check:
+        # A. Baselines against the rest of the league
         for other in other_team_names:
             # Team 1 Baseline
             if (team1_name, other, scenario) in all_h2h_probs:
@@ -412,6 +414,19 @@ def find_trades(
             if team2_name != "FreeAgents":
                 if (team2_name, other, scenario) in all_h2h_probs:
                     baseline_data[scenario][team2_name][other] = all_h2h_probs[(team2_name, other, scenario)]['overall']
+        
+        # B. Baseline between Team 1 and Team 2 (The specific match up)
+        if team2_name != "FreeAgents":
+             if (team1_name, team2_name, scenario) in all_h2h_probs:
+                base_t1_vs_t2 = all_h2h_probs[(team1_name, team2_name, scenario)]['overall']
+                baseline_data[scenario][team1_name][team2_name] = base_t1_vs_t2
+                # t2 vs t1 is just the inverse of t1 vs t2 generally, but let's fetch strictly from lookup if available
+                # or calculate inverse
+                if (team2_name, team1_name, scenario) in all_h2h_probs:
+                    baseline_data[scenario][team2_name][team1_name] = all_h2h_probs[(team2_name, team1_name, scenario)]['overall']
+                else:
+                    baseline_data[scenario][team2_name][team1_name] = 1.0 - base_t1_vs_t2
+
 
     # 2. Identify TRADABLE players
     def get_tradable_players(roster_tuples):
@@ -521,6 +536,7 @@ def find_trades(
                 t1_gain_sum = 0.0
                 t2_gain_sum = 0.0
                 
+                # A. Compare against Rest of League
                 for other in other_team_names:
                     other_weeks = all_team_weekly_stats[other][scenario]
                     
@@ -543,6 +559,26 @@ def find_trades(
                     else:
                         t2_deltas[other] = 0.0
                         t2_new_vals[other] = 0.0
+                
+                # B. Compare Team 1 vs Team 2 (Post Trade)
+                if team2_name != "FreeAgents":
+                    # Calc Team 1 vs Team 2
+                    new_win_pct_1_vs_2 = compare_n_weeks(t1_new_weeks, t2_new_weeks)['overall']
+                    base_1_vs_2 = baseline_data[scenario][team1_name].get(team2_name, 0.5)
+                    d1_vs_2 = new_win_pct_1_vs_2 - base_1_vs_2
+                    
+                    t1_deltas[team2_name] = d1_vs_2
+                    t1_new_vals[team2_name] = new_win_pct_1_vs_2
+                    t1_gain_sum += d1_vs_2
+                    
+                    # Calc Team 2 vs Team 1 (Inverse)
+                    new_win_pct_2_vs_1 = 1.0 - new_win_pct_1_vs_2
+                    base_2_vs_1 = baseline_data[scenario][team2_name].get(team1_name, 0.5)
+                    d2_vs_1 = new_win_pct_2_vs_1 - base_2_vs_1
+                    
+                    t2_deltas[team1_name] = d2_vs_1
+                    t2_new_vals[team1_name] = new_win_pct_2_vs_1
+                    t2_gain_sum += d2_vs_1
 
                 # Check Criteria
                 if t1_gain_sum <= 0:
