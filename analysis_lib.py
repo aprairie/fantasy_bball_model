@@ -485,6 +485,11 @@ def find_trades(
                 
                 if t1_inj != t2_inj:
                     continue
+            
+            # --- Check 2.5: Count Drops leaving T1 (For Free Agent Logic) ---
+            drops_exiting_t1 = 0
+            if team2_name == "FreeAgents":
+                drops_exiting_t1 = sum(1 for p in t1_players_out if player_status_map.get(p) == 'DROP')
 
             # --- Simulation ---
             is_trade_valid = True
@@ -506,8 +511,20 @@ def find_trades(
                     t2_new_roster = [p for p in t2_active_base if p not in t2_players_out]
                 
                 # Add players entering
+                temp_drops_to_assign = drops_exiting_t1 
                 for p in t2_players_out:
                     status = player_status_map.get(p, 'Active') # Default to Active for FAs
+                    
+                    # --- FIX START ---
+                    # If we are dropping a player marked 'DROP' to pick up a Free Agent,
+                    # we must mark the Free Agent as 'DROP' for this simulation iteration.
+                    # This prevents the "FullStrength" roster from growing artifically (e.g., from 13 to 14 players)
+                    # just because we swapped a DROP (inactive) player for a FA (active) player.
+                    if team2_name == "FreeAgents" and temp_drops_to_assign > 0:
+                        status = 'DROP'
+                        temp_drops_to_assign -= 1
+                    # --- FIX END ---
+                    
                     if is_fs:
                         if status != 'DROP': t1_new_roster.append(p)
                     else:
