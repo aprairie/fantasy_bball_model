@@ -34,7 +34,8 @@ SIMULATED_SEASON_ID = 1
 AVAILABILITY_YEAR_WEIGHTS = [(2026, 1), (2025, 1), (2024, 1)]
 
 # Weights for Game Sampling (Performance)
-SIM_YEAR_WEIGHTS = [(2026, 2.5), (2025, 0.5), (2024, 0.1)]
+# SIM_YEAR_WEIGHTS = [(2026, 2.5), (2025, 0.5), (2024, 0.1)] # old, stable
+SIM_YEAR_WEIGHTS = [(2026, 10), (2025, 1)]
 
 NUM_SIM_GAMES = 1000
 MIN_GAMES_PLAYED = 1 
