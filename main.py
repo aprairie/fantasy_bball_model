@@ -34,7 +34,7 @@ except ImportError as e:
 N_GAMES_TO_GENERATE = 10000
 N_SIM_WEEKS = 5000
 # SIM_YEAR_WEIGHTS = [(2026, 1.2), (2025, 0.2), (2024, 0.1)] # old, stableish
-SIM_YEAR_WEIGHTS = [(2026, 10), (2025, 1)]
+SIM_YEAR_WEIGHTS = [(2026, 100), (2025, 1)]
 AVAILABILITY_SIM_YEAR_WEIGHTS = [(2026, 1), (2025, 1), (2024, 1)]
 PRIOR_PLAY_PERCENTAGE = 0.85
 PRIOR_STRENGTH_IN_GAMES = 82.0
@@ -211,6 +211,37 @@ def parse_arguments():
         help='List of player names that MUST be in the trade (e.g. "LeBron James")'
     )
 
+    # --- NEW COMMAND: exact-trade ---
+    parser_exact_trade = subparsers.add_parser(
+        'exact-trade', 
+        help='Analyze the impact of one specific trade (no optimization)'
+    )
+    parser_exact_trade.add_argument(
+        '--team1', 
+        required=True, 
+        type=str, 
+        help='Name of the first team'
+    )
+    parser_exact_trade.add_argument(
+        '--team2', 
+        required=True, 
+        type=str, 
+        help='Name of the second team (or "FreeAgents")'
+    )
+    parser_exact_trade.add_argument(
+        '--t1-gives',
+        required=True,
+        nargs='+',
+        help='List of player names Team 1 sends out (e.g., "Player A" "Player B")'
+    )
+    parser_exact_trade.add_argument(
+        '--t2-gives',
+        required=True,
+        nargs='+',
+        help='List of player names Team 2 sends out (e.g., "Player C" "Player D")'
+    )
+
+
     # Handle case where no command is given
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
@@ -293,19 +324,20 @@ if __name__ == "__main__":
         elif args.command == 'export':
             export_player_stats_to_csv(session)
 
-        # --- COMMAND: H2H or TRADE ---
-        elif args.command in ('h2h', 'trade'):
+        # --- COMMAND: H2H, TRADE, or EXACT-TRADE ---
+        elif args.command in ('h2h', 'trade', 'exact-trade'):
             rosters_map = get_league_rosters()
             if not rosters_map:
                 raise Exception("Could not get league rosters.")
                 
-            if args.command == 'trade':
+            # --- Team Validation (Applies to both trade and exact-trade) ---
+            if args.command in ('trade', 'exact-trade'):
                 valid_teams = set(rosters_map.keys())
                 if args.team1 not in valid_teams:
                     print(f"Error: '{args.team1}' is not a valid team.", file=sys.stderr)
                     sys.exit(1)
                 
-                # --- MODIFICATION: Allow 'FreeAgents' as a valid team2 ---
+                # MODIFICATION: Check team2 validity
                 if args.team2 not in valid_teams and args.team2 != "FreeAgents":
                     print(f"Error: '{args.team2}' is not a valid team.", file=sys.stderr)
                     sys.exit(1)
@@ -318,14 +350,12 @@ if __name__ == "__main__":
             all_player_ids_set = set(pid for r in rosters_map.values() for pid, s in r)
             
             # --- CRITICAL UPDATE: If trading with FreeAgents, include them in the simulation set! ---
-            if args.command == 'trade' and args.team2 == "FreeAgents":
+            is_fa_trade = args.command in ('trade', 'exact-trade') and args.team2 == "FreeAgents"
+            if is_fa_trade:
                 print("Trade Target: Free Agents. Adding Top 30 FA to simulation pool...")
                 try:
-                    # Get Available Free Agent IDs (String format)
                     fa_ids = get_available_free_agents()
                     
-                    # Rank them by total_score to get the Top 30
-                    # This ensures we only simulate relevant free agents, saving time
                     top_fa_query = (
                         session.query(Player.player_id)
                         .join(PlayerSeasonValue, Player.id == PlayerSeasonValue.player_id)
@@ -346,6 +376,8 @@ if __name__ == "__main__":
             # Now get player map (for names)
             player_map_query = session.query(Player.player_id, Player.name).all()
             id_to_name_map = {p.player_id: p.name for p in player_map_query}
+            # Create a name-to-ID map for reverse lookup (used by trade/exact-trade)
+            name_to_id_map = {p.name.strip().lower(): p.player_id for p in player_map_query}
             
             # Generate Game Pools (Now includes FAs if applicable)
             game_pools = get_all_player_game_pools(session, all_player_ids_set)
@@ -356,24 +388,22 @@ if __name__ == "__main__":
                 all_player_ids_set,
                 N_SIM_WEEKS
             )
+            
+            # --- BASELINE SIMULATION (Required for all analysis commands) ---
+            print("\n(Calculating baseline league stats first...)")
+            all_team_weekly_stats, all_h2h_probs = analysis.run_league_simulation(
+                rosters_map, player_weekly_stats_map, id_to_name_map, N_SIM_WEEKS
+            )
 
             if args.command == 'h2h':
-                analysis.run_league_simulation(
-                    rosters_map, player_weekly_stats_map, id_to_name_map, N_SIM_WEEKS
-                )
+                # Already printed by run_league_simulation, no further action needed
+                pass 
                 
             elif args.command == 'trade':
-                print("\n(Calculating baseline league stats first...)")
-                all_team_weekly_stats, all_h2h_probs = analysis.run_league_simulation(
-                    rosters_map, player_weekly_stats_map, id_to_name_map, N_SIM_WEEKS
-                )
                 
                 # --- Logic to Handle Required Players (Name -> ID) ---
                 required_ids = []
                 if args.include:
-                    # Create case-insensitive lookup: name.lower() -> player_id
-                    name_to_id_map = {p.name.lower(): p.player_id for p in player_map_query}
-                    
                     print(f"\nFiltering for trades including: {args.include}")
                     for name in args.include:
                         clean_name = name.strip().lower()
@@ -394,7 +424,43 @@ if __name__ == "__main__":
                     id_to_name_map=id_to_name_map,
                     team2_loss_tolerance=args.tolerance,
                     allow_trading_injured=args.injured,
-                    required_players=required_ids, # <-- Passed here
+                    required_players=required_ids,
+                    n_sim_weeks=N_SIM_WEEKS
+                )
+            
+            # --- NEW COMMAND: EXACT-TRADE ---
+            elif args.command == 'exact-trade':
+                
+                def convert_names_to_ids(names: List[str], lookup_map: Dict[str, str], map_name: str) -> List[str]:
+                    ids = []
+                    for name in names:
+                        clean_name = name.strip().lower()
+                        player_id = lookup_map.get(clean_name)
+                        if player_id:
+                            ids.append(player_id)
+                        else:
+                            # Print a warning but continue if possible
+                            print(f"WARNING: Could not find player '{name}' ({map_name}) in database. This player will be ignored.", file=sys.stderr)
+                    return ids
+                    
+                # Convert input names to IDs
+                t1_gives_ids = convert_names_to_ids(args.t1_gives, name_to_id_map, "T1 Gives")
+                t2_gives_ids = convert_names_to_ids(args.t2_gives, name_to_id_map, "T2 Gives")
+                
+                if not t1_gives_ids or not t2_gives_ids:
+                    print("Error: Trade analysis requires at least one valid player ID for each side.", file=sys.stderr)
+                    sys.exit(1)
+                    
+                analysis.analyze_exact_trade(
+                    team1_name=args.team1,
+                    t1_players_out=t1_gives_ids,
+                    team2_name=args.team2,
+                    t2_players_out=t2_gives_ids,
+                    rosters_map=rosters_map,
+                    player_weekly_stats_map=player_weekly_stats_map,
+                    all_team_weekly_stats=all_team_weekly_stats,
+                    all_h2h_probs=all_h2h_probs,
+                    id_to_name_map=id_to_name_map,
                     n_sim_weeks=N_SIM_WEEKS
                 )
 
