@@ -4,7 +4,7 @@ import argparse
 import sys
 from typing import Dict, List, Set
 from sqlalchemy.orm import Session
-from sqlalchemy import exc, desc # Added desc
+from sqlalchemy import exc, desc
 
 # --- Library Imports ---
 import analysis_lib as analysis
@@ -232,14 +232,28 @@ def parse_arguments():
         '--t1-gives',
         required=True,
         nargs='+',
-        help='List of player names Team 1 sends out (e.g., "Player A" "Player B")'
+        help='List of player names Team 1 sends out in the trade.'
     )
     parser_exact_trade.add_argument(
         '--t2-gives',
         required=True,
         nargs='+',
-        help='List of player names Team 2 sends out (e.g., "Player C" "Player D")'
+        help='List of player names Team 2 sends out in the trade.'
     )
+    # --- NEW ARGUMENTS FOR DROPS/ADDS ---
+    parser_exact_trade.add_argument(
+        '--t1-drops',
+        nargs='+',
+        default=[],
+        help='List of player names Team 1 drops AFTER the trade (can include newly acquired players or current players).'
+    )
+    parser_exact_trade.add_argument(
+        '--t1-adds',
+        nargs='+',
+        default=[],
+        help='List of player names Team 1 picks up from Free Agents to fill drop spots AFTER the trade.'
+    )
+    # ------------------------------------
 
 
     # Handle case where no command is given
@@ -330,7 +344,7 @@ if __name__ == "__main__":
             if not rosters_map:
                 raise Exception("Could not get league rosters.")
                 
-            # --- Team Validation (Applies to both trade and exact-trade) ---
+            # --- Team Validation (Applies to trade and exact-trade) ---
             if args.command in ('trade', 'exact-trade'):
                 valid_teams = set(rosters_map.keys())
                 if args.team1 not in valid_teams:
@@ -351,13 +365,28 @@ if __name__ == "__main__":
             
             # --- CRITICAL UPDATE: If trading with FreeAgents, include them in the simulation set! ---
             is_fa_trade = args.command in ('trade', 'exact-trade') and args.team2 == "FreeAgents"
-            if is_fa_trade:
-                print("Trade Target: Free Agents. Adding Top 30 FA to simulation pool...")
+            is_fa_add = args.command == 'exact-trade' and args.t1_adds
+            
+            if is_fa_trade or is_fa_add:
+                print("Trade/FA Targetting detected. Adding relevant FAs to simulation pool...")
                 try:
                     fa_ids = get_available_free_agents()
                     
-                    top_fa_query = (
-                        session.query(Player.player_id)
+                    # Players who are FAs in the current transaction (either T2's outgoing or T1's adds)
+                    explicit_fa_names = []
+                    if is_fa_trade:
+                        explicit_fa_names.extend(args.t2_gives)
+                    if is_fa_add:
+                        explicit_fa_names.extend(args.t1_adds)
+                        
+                    # Also include the top 30 FAs for the `find_trades` utility if it runs
+                    
+                    # We will only generate stats for the top 30 FAs if we need them, 
+                    # but we *must* ensure that any FA specified in the `--t1-adds` list is included in the simulation set.
+                    
+                    # Fetch all players to potentially add (Top 30 + any explicit adds)
+                    fa_query = (
+                        session.query(Player.player_id, Player.name)
                         .join(PlayerSeasonValue, Player.id == PlayerSeasonValue.player_id)
                         .filter(PlayerSeasonValue.season == 2025)
                         .filter(Player.player_id.in_(fa_ids))
@@ -366,9 +395,22 @@ if __name__ == "__main__":
                         .all()
                     )
                     
-                    top_fa_ids = [r.player_id for r in top_fa_query]
-                    print(f"Added {len(top_fa_ids)} Free Agents to simulation.")
-                    all_player_ids_set.update(top_fa_ids)
+                    top_fa_ids = [r.player_id for r in fa_query]
+                    
+                    # Add IDs for explicit FA names in --t1-adds if they aren't already in the top 30
+                    player_map_query = session.query(Player.player_id, Player.name).all()
+                    name_to_id_map_all = {p.name.strip().lower(): p.player_id for p in player_map_query}
+                    
+                    explicit_add_ids = []
+                    for name in args.t1_adds:
+                        player_id = name_to_id_map_all.get(name.strip().lower())
+                        if player_id:
+                            explicit_add_ids.append(player_id)
+                    
+                    all_fa_ids_to_simulate = set(top_fa_ids) | set(explicit_add_ids)
+                    
+                    print(f"Added {len(all_fa_ids_to_simulate)} Free Agents to simulation.")
+                    all_player_ids_set.update(all_fa_ids_to_simulate)
                     
                 except Exception as e:
                     print(f"Warning: Could not fetch Free Agents for simulation: {e}")
@@ -378,6 +420,18 @@ if __name__ == "__main__":
             id_to_name_map = {p.player_id: p.name for p in player_map_query}
             # Create a name-to-ID map for reverse lookup (used by trade/exact-trade)
             name_to_id_map = {p.name.strip().lower(): p.player_id for p in player_map_query}
+            
+            # Helper function for name to ID conversion
+            def convert_names_to_ids(names: List[str], lookup_map: Dict[str, str], map_name: str) -> List[str]:
+                ids = []
+                for name in names:
+                    clean_name = name.strip().lower()
+                    player_id = lookup_map.get(clean_name)
+                    if player_id:
+                        ids.append(player_id)
+                    else:
+                        print(f"WARNING: Could not find player '{name}' ({map_name}) in database. This player will be ignored.", file=sys.stderr)
+                return ids
             
             # Generate Game Pools (Now includes FAs if applicable)
             game_pools = get_all_player_game_pools(session, all_player_ids_set)
@@ -405,13 +459,7 @@ if __name__ == "__main__":
                 required_ids = []
                 if args.include:
                     print(f"\nFiltering for trades including: {args.include}")
-                    for name in args.include:
-                        clean_name = name.strip().lower()
-                        found_id = name_to_id_map.get(clean_name)
-                        if found_id:
-                            required_ids.append(found_id)
-                        else:
-                            print(f"WARNING: Could not find player '{name}' in database. They will be ignored.")
+                    required_ids = convert_names_to_ids(args.include, name_to_id_map, "Required Players")
                 
                 analysis.find_trades(
                     n=args.num,
@@ -428,27 +476,19 @@ if __name__ == "__main__":
                     n_sim_weeks=N_SIM_WEEKS
                 )
             
-            # --- NEW COMMAND: EXACT-TRADE ---
+            # --- COMMAND: EXACT-TRADE ---
             elif args.command == 'exact-trade':
                 
-                def convert_names_to_ids(names: List[str], lookup_map: Dict[str, str], map_name: str) -> List[str]:
-                    ids = []
-                    for name in names:
-                        clean_name = name.strip().lower()
-                        player_id = lookup_map.get(clean_name)
-                        if player_id:
-                            ids.append(player_id)
-                        else:
-                            # Print a warning but continue if possible
-                            print(f"WARNING: Could not find player '{name}' ({map_name}) in database. This player will be ignored.", file=sys.stderr)
-                    return ids
-                    
                 # Convert input names to IDs
                 t1_gives_ids = convert_names_to_ids(args.t1_gives, name_to_id_map, "T1 Gives")
                 t2_gives_ids = convert_names_to_ids(args.t2_gives, name_to_id_map, "T2 Gives")
                 
+                # New conversions for drops/adds
+                t1_drops_ids = convert_names_to_ids(args.t1_drops, name_to_id_map, "T1 Drops")
+                t1_adds_ids = convert_names_to_ids(args.t1_adds, name_to_id_map, "T1 Adds")
+                
                 if not t1_gives_ids or not t2_gives_ids:
-                    print("Error: Trade analysis requires at least one valid player ID for each side.", file=sys.stderr)
+                    print("Error: Trade analysis requires at least one valid player ID for each side of the trade.", file=sys.stderr)
                     sys.exit(1)
                     
                 analysis.analyze_exact_trade(
@@ -456,6 +496,10 @@ if __name__ == "__main__":
                     t1_players_out=t1_gives_ids,
                     team2_name=args.team2,
                     t2_players_out=t2_gives_ids,
+                    # Pass the new lists
+                    t1_players_to_drop_post_trade=t1_drops_ids,
+                    t1_free_agents_to_add=t1_adds_ids,
+                    # Remaining args
                     rosters_map=rosters_map,
                     player_weekly_stats_map=player_weekly_stats_map,
                     all_team_weekly_stats=all_team_weekly_stats,

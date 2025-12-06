@@ -303,7 +303,7 @@ def find_trades(
                 print(f"Generating stats for {len(missing_stats_ids)} free agents...")
                 
                 # Constants used in main.py
-                SIM_YEAR_WEIGHTS = [(2026, 1.2), (2025, 0.2), (2024, 0.1)]
+                SIM_YEAR_WEIGHTS = [(2026, 1.2), (2025, 0.2), (2024, 0.1)] # Reverting to the logic from the user's provided find_trades
                 AVAILABILITY_SIM_YEAR_WEIGHTS = [(2026, 1), (2025, 1), (2024, 1)]
                 PRIOR_PLAY_PERCENTAGE = 0.85
                 PRIOR_STRENGTH_IN_GAMES = 82.0
@@ -317,7 +317,6 @@ def find_trades(
                 )
                 
                 # 2. Generate Game Samples
-                # NOTE: generate_weighted_game_samples expects a Session object
                 game_pools = generate_weighted_game_samples(
                     session=session,
                     player_ids=missing_stats_ids,
@@ -418,14 +417,14 @@ def find_trades(
         # B. Baseline between Team 1 and Team 2 (The specific match up)
         if team2_name != "FreeAgents":
              if (team1_name, team2_name, scenario) in all_h2h_probs:
-                base_t1_vs_t2 = all_h2h_probs[(team1_name, team2_name, scenario)]['overall']
-                baseline_data[scenario][team1_name][team2_name] = base_t1_vs_t2
-                # t2 vs t1 is just the inverse of t1 vs t2 generally, but let's fetch strictly from lookup if available
-                # or calculate inverse
-                if (team2_name, team1_name, scenario) in all_h2h_probs:
-                    baseline_data[scenario][team2_name][team1_name] = all_h2h_probs[(team2_name, team1_name, scenario)]['overall']
-                else:
-                    baseline_data[scenario][team2_name][team1_name] = 1.0 - base_t1_vs_t2
+                 base_t1_vs_t2 = all_h2h_probs[(team1_name, team2_name, scenario)]['overall']
+                 baseline_data[scenario][team1_name][team2_name] = base_t1_vs_t2
+                 # t2 vs t1 is just the inverse of t1 vs t2 generally, but let's fetch strictly from lookup if available
+                 # or calculate inverse
+                 if (team2_name, team1_name, scenario) in all_h2h_probs:
+                     baseline_data[scenario][team2_name][team1_name] = all_h2h_probs[(team2_name, team1_name, scenario)]['overall']
+                 else:
+                     baseline_data[scenario][team2_name][team1_name] = 1.0 - base_t1_vs_t2
 
 
     # 2. Identify TRADABLE players
@@ -700,13 +699,15 @@ def find_trades(
         print_team_table(team2_name, is_team_1=False)
 
 
-
+# --- Core Logic: Exact Trade Analyzer (MODIFIED) ---
 
 def analyze_exact_trade(
     team1_name: str,
     t1_players_out: List[str],
     team2_name: str,
     t2_players_out: List[str],
+    t1_players_to_drop_post_trade: List[str], 
+    t1_free_agents_to_add: List[str],
     rosters_map: dict,
     player_weekly_stats_map: dict,
     all_team_weekly_stats: dict,
@@ -715,17 +716,11 @@ def analyze_exact_trade(
     n_sim_weeks: int = 5000
 ):
     """
-    Analyzes and reports the results for one specific trade (t1_players_out <-> t2_players_out)
-    between team1 and team2, regardless of trade improvement or roster constraints.
-    
-    This function skips all combination generation, player filtering, and trade 
-    validity checks (except for Free Agent data generation, if applicable).
+    Analyzes one specific trade (t1_players_out <-> t2_players_out), 
+    plus post-trade drops and FA pickups for Team 1.
     """
     
     # --- Imports for Free Agent Logic ---
-    # NOTE: You must ensure 'database', 'Player', 'PlayerSeasonValue', 
-    # 'get_available_free_agents', 'predict_all_player_probabilities', and 
-    # 'generate_weighted_game_samples' are accessible if team2_name is 'FreeAgents'.
     try:
         if team2_name == "FreeAgents":
             from database import SessionLocal, PlayerSeasonValue, Player
@@ -739,53 +734,61 @@ def analyze_exact_trade(
              print("FATAL ERROR: Missing required modules for Free Agent trade analysis.")
              return
 
-    print(f"\n--- Analyzing Exact Trade: {team1_name} sends {len(t1_players_out)} for {len(t2_players_out)} from {team2_name} ---")
+    # --- Print Header for New Analysis Type ---
+    drop_fa_count = len(t1_players_to_drop_post_trade)
+    fa_add_count = len(t1_free_agents_to_add)
+    
+    print(f"\n--- Analyzing Trade + Drops/FA: {team1_name} sends {len(t1_players_out)} for {len(t2_players_out)} from {team2_name} ---")
+    if drop_fa_count > 0 or fa_add_count > 0:
+        drop_names = ", ".join([id_to_name_map.get(pid, pid) for pid in t1_players_to_drop_post_trade])
+        add_names = ", ".join([id_to_name_map.get(pid, pid) for pid in t1_free_agents_to_add])
+        print(f"   Post-Trade Steps for {team1_name}: Drop [{drop_names}] (Total: {drop_fa_count}), Add FAs: [{add_names}] (Total: {fa_add_count})")
 
     t1_full_roster_tuples = rosters_map[team1_name]
     t2_full_roster_tuples = []
     
-    # --- FREE AGENT HANDLING (Simplified - just ensures stats are available) ---
+    # --- FREE AGENT HANDLING (Ensures T2/T1 FA stats are present) ---
     if team2_name == "FreeAgents":
-        # Note: The original find_trades Free Agent logic is complex and relies on
-        # ranking to get a limited list of FAs. Here we assume t2_players_out are the
-        # exact FAs being considered and we need to check/generate their stats.
+        # Note: We rely on main.py to have added the *top* FAs to the overall simulation pool.
+        # Here we just treat the players in t2_players_out as FAs and assume they have stats.
         fa_players_to_check = [pid for pid in t2_players_out if pid not in player_weekly_stats_map or not player_weekly_stats_map[pid]]
-        
         if fa_players_to_check:
-            print(f"Generating stats for {len(fa_players_to_check)} incoming Free Agents...")
-            # NOTE: The full FA generation logic from find_trades is omitted here
-            # for brevity and since it's an external library dependency.
-            # IN A REAL SCENARIO, YOU WOULD NEED TO INSERT THE FULL STAT GENERATION 
-            # LOGIC FOR fa_players_to_check HERE if their stats are missing.
-            
-            # For this simplified implementation, we'll assume stats are pre-generated
-            # or the trade is skipped if Free Agent stats are critically missing.
-            pass
-
+             print(f"WARNING: Stats missing for {len(fa_players_to_check)} incoming T2 FAs. Results may be 0/inaccurate.")
         t2_full_roster_tuples = [(pid, 'Active') for pid in t2_players_out]
-        
-        # Inject dummy stats so simulation doesn't crash when looking up 'FreeAgents'
         if "FreeAgents" not in all_team_weekly_stats:
              all_team_weekly_stats["FreeAgents"] = {"FullStrength": [], "Current": []}
     else:
         t2_full_roster_tuples = rosters_map[team2_name]
     
-    # Check player counts
-    if len(t1_players_out) != len(t2_players_out):
-         print("WARNING: This is an X-for-Y trade. Roster size may change for T1/T2 if not handled by your league rules.")
-
-    # 0. Build a Status Map for O(1) lookup
+    # --- Pre-Trade Status Map ---
     player_status_map = {}
     for pid, status in t1_full_roster_tuples:
         player_status_map[pid] = status
     for pid, status in t2_full_roster_tuples:
         player_status_map[pid] = status
-    
+        
+    # --- Players involved in the secondary transactions for T1 ---
+    t1_out_set = set(t1_players_out) # Players T1 sends in the trade
+    t1_drops_set = set(t1_players_to_drop_post_trade) # Players T1 drops after the trade
+    t1_fa_adds_set = set(t1_free_agents_to_add) # Players T1 adds from FA
+
+    # Set of all players being removed from T1's full roster
+    all_exiting_t1 = t1_out_set | t1_drops_set
+    # Set of all players being added to T1's full roster
+    all_entering_t1 = set(t2_players_out) | t1_fa_adds_set
+
+    # Check for players in the 'in' and 'out' list simultaneously
+    overlap = all_exiting_t1 & all_entering_t1
+    if overlap:
+         print(f"CRITICAL WARNING: The following players are both leaving and entering T1's final roster: {', '.join([id_to_name_map.get(p, p) for p in overlap])}. Simulation may be inaccurate.")
+
+
     team_names = sorted(list(rosters_map.keys()))
     other_team_names = [t for t in team_names if t not in [team1_name, team2_name] and t != "FreeAgents"]
     scenarios_to_check = ["FullStrength", "Current"]
-
-    # 1. Calculate the baseline data (Copied from find_trades logic)
+    
+    # ... (Baseline calculation remains the same) ...
+    
     baseline_data = {s: {team1_name: {}, team2_name: {}} for s in scenarios_to_check}
     for scenario in scenarios_to_check:
         for other in other_team_names:
@@ -806,49 +809,59 @@ def analyze_exact_trade(
 
     trade_results_by_scenario = {}
     
-    # Calculate drops exiting T1 (for free agent logic)
-    drops_exiting_t1 = 0
-    if team2_name == "FreeAgents":
-        drops_exiting_t1 = sum(1 for p in t1_players_out if player_status_map.get(p) == 'DROP')
-
-    # 2. Run Simulation for the exact trade
+    # --- SIMULATION (The main block being modified) ---
     for scenario in scenarios_to_check:
         # 1. Get current active rosters for this scenario
         is_fs = (scenario == "FullStrength")
-        t1_active_base = filter_roster(t1_full_roster_tuples, is_full_strength=is_fs)
+        t1_full_base_ids = set([pid for pid, status in t1_full_roster_tuples])
         t2_active_base = []
         if team2_name != "FreeAgents":
             t2_active_base = filter_roster(t2_full_roster_tuples, is_full_strength=is_fs)
         
-        # 2. Construct new active rosters
-        t1_new_roster = [p for p in t1_active_base if p not in t1_players_out]
+        # 2. Construct new active roster for Team 1
+        
+        # Start with all original players, remove all players that are leaving T1 (trade out or dropped)
+        t1_new_roster_all = t1_full_base_ids - all_exiting_t1
+        t1_new_roster_all.update(all_entering_t1)
+        
+        # Now apply the active filter to the FINAL roster
+        t1_new_roster = []
+        for p in t1_new_roster_all:
+            # For players *not* originally on T1's roster (incoming), assume 'Active' status unless 
+            # they were marked 'INJ' by T2 or if we check their FA status (which we don't for T1's incoming FAs)
+            # The simplest proxy for FAs and T2 players: use the status map if available, otherwise 'Active'.
+            # For this simplified model, FAs are always 'Active' unless they are replacing a drop/inj slot, 
+            # but since we calculate the *final* roster based on IDs, we only need to filter for INJ.
+            
+            # Since the only statuses that remove a player from the active roster are 'DROP' (FS only) and 'INJ' (Current only),
+            # we need to define the status of the incoming players. 
+            
+            current_status = player_status_map.get(p, 'Active') # Get base status if known
+            
+            # Key assumption: Players in t1_drops_set are designated 'DROP' after the trade.
+            if p in t1_drops_set:
+                 current_status = 'DROP'
+            # Key assumption: Players in t1_fa_adds_set are considered 'Active' unless they are replacing a Drop (already handled above)
+            # We don't override T2 players' INJ status.
+            
+            if is_fs:
+                if current_status != 'DROP':
+                    t1_new_roster.append(p)
+            else:
+                if current_status != 'INJ':
+                    t1_new_roster.append(p)
+                
+        # 3. Construct new active rosters for Team 2 (Only trade logic applies)
         t2_new_roster = []
         if team2_name != "FreeAgents":
             t2_new_roster = [p for p in t2_active_base if p not in t2_players_out]
-        
-        # Add players entering
-        temp_drops_to_assign = drops_exiting_t1
-        for p in t2_players_out:
-            status = player_status_map.get(p, 'Active')
-            
-            # Free Agent DROP assignment logic
-            if team2_name == "FreeAgents" and temp_drops_to_assign > 0:
-                status = 'DROP'
-                temp_drops_to_assign -= 1
-            
-            if is_fs:
-                if status != 'DROP': t1_new_roster.append(p)
-            else:
-                if status != 'INJ': t1_new_roster.append(p)
-
-        if team2_name != "FreeAgents":
             for p in t1_players_out:
                 status = player_status_map.get(p)
                 if is_fs:
                     if status != 'DROP': t2_new_roster.append(p)
                 else:
                     if status != 'INJ': t2_new_roster.append(p)
-        
+
         # Fast Sim
         t1_new_weeks = build_team_weeks_from_players(t1_new_roster, player_weekly_stats_map, n_sim_weeks)
         t2_new_weeks = []
@@ -920,8 +933,10 @@ def analyze_exact_trade(
     def get_player_names(player_ids):
         return [id_to_name_map.get(pid, pid) for pid in player_ids]
         
-    t1_names = ", ".join(get_player_names(t2_players_out))
-    t2_names = ", ".join(get_player_names(t1_players_out))
+    t1_gives_names = ", ".join(get_player_names(t1_players_out))
+    t2_gives_names = ", ".join(get_player_names(t2_players_out))
+    t1_drops_names = ", ".join(get_player_names(t1_players_to_drop_post_trade))
+    t1_adds_names = ", ".join(get_player_names(t1_free_agents_to_add))
     
     combined_gain = 0
     for scen in scenarios_to_check:
@@ -930,7 +945,10 @@ def analyze_exact_trade(
             combined_gain += trade_results_by_scenario[scen]['t2_gain_sum']
             
     print(f"\n{'='*85}")
-    print(f"EXACT TRADE ANALYSIS: {team1_name} gets [{t1_names}] <--> {team2_name} gets [{t2_names}]")
+    print(f"EXACT TRADE ANALYSIS:")
+    print(f"  STEP 1: {team1_name} trades [{t2_gives_names}] <--> {team2_name} trades [{t1_gives_names}]")
+    if t1_drops_names or t1_adds_names:
+        print(f"  STEP 2: {team1_name} Drops [{t1_drops_names}] and Adds FAs: [{t1_adds_names}]")
     print(f"Combined League Gain Metric: {combined_gain:.4f}")
     print(f"{'-'*85}")
 
@@ -971,8 +989,6 @@ def analyze_exact_trade(
         print(f"{'-'*68}")
 
         for opp in sorted(deltas_c.keys()):
-            # Handle potential key errors if baseline data for an opponent is missing (shouldn't happen 
-            # if run_league_simulation ran correctly, but added default for robustness)
             bc = baseline_data['Current'][team_name].get(opp, 0.5)
             bf = baseline_data['FullStrength'][team_name].get(opp, 0.5)
             
