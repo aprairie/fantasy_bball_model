@@ -1,5 +1,6 @@
 import time
 import random
+import sys  # Added for sys.exit()
 from typing import Dict, List, Tuple, Optional, Set
 from itertools import combinations
 from sqlalchemy import desc
@@ -10,6 +11,39 @@ CATEGORIES = ['pts', 'reb', 'ast', 'stl', 'blk', 'tpm', 'to', 'fg%', 'ft%']
 ALL_STAT_KEYS = ['pts', 'reb', 'ast', 'stl', 'blk', 'tpm', 'to', 'fga', 'fgm', 'fta', 'ftm']
 
 # --- Helper Functions ---
+
+def validate_and_crash_if_invalid_roster(
+    team_name: str, 
+    roster_ids: List[str], 
+    scenario: str, 
+    id_to_name_map: Dict
+):
+    """
+    Checks if the roster size matches EXPECTED_ROSTER_SIZE.
+    If not, prints detailed debug info and kills the program.
+    """
+    # We ignore the FreeAgents pool as that can be any size
+    if team_name == "FreeAgents":
+        return
+
+    if len(roster_ids) != EXPECTED_ROSTER_SIZE:
+        print(f"\n{'!'*40}")
+        print(f"FATAL ERROR: ROSTER SIZE MISMATCH")
+        print(f"{'!'*40}")
+        print(f"Team:     {team_name}")
+        print(f"Scenario: {scenario}")
+        print(f"Expected: {EXPECTED_ROSTER_SIZE}")
+        print(f"Actual:   {len(roster_ids)}")
+        print(f"{'-'*40}")
+        print(f"Current Roster List:")
+        
+        for i, pid in enumerate(roster_ids, 1):
+            p_name = id_to_name_map.get(pid, f"Unknown ID: {pid}")
+            print(f"{i:2}. {p_name} ({pid})")
+            
+        print(f"{'!'*40}")
+        print("Exiting immediately due to invalid roster construction.")
+        sys.exit(1)
 
 def build_team_weeks_from_players(
     roster_player_ids: List[str],
@@ -188,6 +222,10 @@ def run_league_simulation(
             scenario = "FullStrength" if is_full_strength else "Current"
             active_roster = filter_roster(team_full_roster, is_full_strength)
             
+            # --- VALIDATION INJECTION ---
+            validate_and_crash_if_invalid_roster(team_name, active_roster, scenario, id_to_name_map)
+            # ----------------------------
+
             weekly_stats_list = build_team_weeks_from_players(
                 active_roster,
                 player_weekly_stats_map,
@@ -251,8 +289,6 @@ def find_trades(
 ):
     """
     Finds trades where Team 1 improves.
-    If team2 is "FreeAgents", picks top 30 FAs by Year 1 Z-Score and ignores team2 improvement criteria.
-    Includes the head-to-head performance between team1 and team2 in calculations and tables.
     """
     
     # --- IMPORTS FOR FREE AGENT LOGIC ---
@@ -303,7 +339,7 @@ def find_trades(
                 print(f"Generating stats for {len(missing_stats_ids)} free agents...")
                 
                 # Constants used in main.py
-                SIM_YEAR_WEIGHTS = [(2026, 1.2), (2025, 0.2), (2024, 0.1)] # Reverting to the logic from the user's provided find_trades
+                SIM_YEAR_WEIGHTS = [(2026, 1.2), (2025, 0.2), (2024, 0.1)] 
                 AVAILABILITY_SIM_YEAR_WEIGHTS = [(2026, 1), (2025, 1), (2024, 1)]
                 PRIOR_PLAY_PERCENTAGE = 0.85
                 PRIOR_STRENGTH_IN_GAMES = 82.0
@@ -320,7 +356,7 @@ def find_trades(
                 game_pools = generate_weighted_game_samples(
                     session=session,
                     player_ids=missing_stats_ids,
-                    num_games=1000, # Reduced from 10000 for speed since it's trade time
+                    num_games=1000, 
                     year_weights=SIM_YEAR_WEIGHTS,
                     availability_predictions=availability_map,
                     include_dummy_games=True 
@@ -517,8 +553,6 @@ def find_trades(
                     # --- FIX START ---
                     # If we are dropping a player marked 'DROP' to pick up a Free Agent,
                     # we must mark the Free Agent as 'DROP' for this simulation iteration.
-                    # This prevents the "FullStrength" roster from growing artifically (e.g., from 13 to 14 players)
-                    # just because we swapped a DROP (inactive) player for a FA (active) player.
                     if team2_name == "FreeAgents" and temp_drops_to_assign > 0:
                         status = 'DROP'
                         temp_drops_to_assign -= 1
@@ -537,6 +571,12 @@ def find_trades(
                         else:
                             if status != 'INJ': t2_new_roster.append(p)
                 
+                # --- VALIDATION INJECTION ---
+                validate_and_crash_if_invalid_roster(team1_name, t1_new_roster, scenario, id_to_name_map)
+                if team2_name != "FreeAgents":
+                    validate_and_crash_if_invalid_roster(team2_name, t2_new_roster, scenario, id_to_name_map)
+                # ----------------------------
+
                 # Fast Sim
                 t1_new_weeks = build_team_weeks_from_players(t1_new_roster, player_weekly_stats_map, n_sim_weeks)
                 t2_new_weeks = []
@@ -699,8 +739,6 @@ def find_trades(
         print_team_table(team2_name, is_team_1=False)
 
 
-# --- Core Logic: Exact Trade Analyzer (MODIFIED) ---
-
 def analyze_exact_trade(
     team1_name: str,
     t1_players_out: List[str],
@@ -749,8 +787,6 @@ def analyze_exact_trade(
     
     # --- FREE AGENT HANDLING (Ensures T2/T1 FA stats are present) ---
     if team2_name == "FreeAgents":
-        # Note: We rely on main.py to have added the *top* FAs to the overall simulation pool.
-        # Here we just treat the players in t2_players_out as FAs and assume they have stats.
         fa_players_to_check = [pid for pid in t2_players_out if pid not in player_weekly_stats_map or not player_weekly_stats_map[pid]]
         if fa_players_to_check:
              print(f"WARNING: Stats missing for {len(fa_players_to_check)} incoming T2 FAs. Results may be 0/inaccurate.")
@@ -772,15 +808,16 @@ def analyze_exact_trade(
     t1_drops_set = set(t1_players_to_drop_post_trade) # Players T1 drops after the trade
     t1_fa_adds_set = set(t1_free_agents_to_add) # Players T1 adds from FA
 
-    # Set of all players being removed from T1's full roster
+    # Set of all players being removed from T1's full roster (Trade out + Drops)
     all_exiting_t1 = t1_out_set | t1_drops_set
-    # Set of all players being added to T1's full roster
+    # Set of all players being added to T1's full roster (Trade in + FA adds)
     all_entering_t1 = set(t2_players_out) | t1_fa_adds_set
 
     # Check for players in the 'in' and 'out' list simultaneously
     overlap = all_exiting_t1 & all_entering_t1
     if overlap:
-         print(f"CRITICAL WARNING: The following players are both leaving and entering T1's final roster: {', '.join([id_to_name_map.get(p, p) for p in overlap])}. Simulation may be inaccurate.")
+         note_players = [id_to_name_map.get(p, p) for p in overlap]
+         print(f"NOTE: The following players are received in trade and immediately dropped: {', '.join(note_players)}. Final roster calculation accounts for this.")
 
 
     team_names = sorted(list(rosters_map.keys()))
@@ -809,40 +846,30 @@ def analyze_exact_trade(
 
     trade_results_by_scenario = {}
     
-    # --- SIMULATION (The main block being modified) ---
+    # --- SIMULATION ---
     for scenario in scenarios_to_check:
-        # 1. Get current active rosters for this scenario
+        # 1. Get current base roster
         is_fs = (scenario == "FullStrength")
         t1_full_base_ids = set([pid for pid, status in t1_full_roster_tuples])
         t2_active_base = []
         if team2_name != "FreeAgents":
             t2_active_base = filter_roster(t2_full_roster_tuples, is_full_strength=is_fs)
         
-        # 2. Construct new active roster for Team 1
-        
-        # Start with all original players, remove all players that are leaving T1 (trade out or dropped)
+        # 2. Construct new full roster IDs for Team 1
         t1_new_roster_all = t1_full_base_ids - all_exiting_t1
-        t1_new_roster_all.update(all_entering_t1)
+        net_entering_t1 = all_entering_t1 - all_exiting_t1 
+        t1_new_roster_all.update(net_entering_t1)
         
-        # Now apply the active filter to the FINAL roster
+        # Now apply the active filter (INJ/DROP status check) to the FINAL roster IDs
         t1_new_roster = []
         for p in t1_new_roster_all:
-            # For players *not* originally on T1's roster (incoming), assume 'Active' status unless 
-            # they were marked 'INJ' by T2 or if we check their FA status (which we don't for T1's incoming FAs)
-            # The simplest proxy for FAs and T2 players: use the status map if available, otherwise 'Active'.
-            # For this simplified model, FAs are always 'Active' unless they are replacing a drop/inj slot, 
-            # but since we calculate the *final* roster based on IDs, we only need to filter for INJ.
+            # We must determine the final status of the player on Team 1
+            current_status = player_status_map.get(p, 'Active') 
             
-            # Since the only statuses that remove a player from the active roster are 'DROP' (FS only) and 'INJ' (Current only),
-            # we need to define the status of the incoming players. 
-            
-            current_status = player_status_map.get(p, 'Active') # Get base status if known
-            
-            # Key assumption: Players in t1_drops_set are designated 'DROP' after the trade.
+            # Key assumption: Players in t1_drops_set are designated 'DROP' status after the trade,
+            # regardless of their initial status.
             if p in t1_drops_set:
                  current_status = 'DROP'
-            # Key assumption: Players in t1_fa_adds_set are considered 'Active' unless they are replacing a Drop (already handled above)
-            # We don't override T2 players' INJ status.
             
             if is_fs:
                 if current_status != 'DROP':
@@ -850,8 +877,22 @@ def analyze_exact_trade(
             else:
                 if current_status != 'INJ':
                     t1_new_roster.append(p)
+
+        # --- NEW PRINTING/LOGGING BLOCK FOR TEAM 1 START ---
+        scenario_name = "FULL STRENGTH" if is_fs else "CURRENT"
+        print(f"\n--- {team1_name} Roster after all moves ({scenario_name}) ---")
+        
+        # We need the player names for a readable output
+        t1_roster_names = sorted([id_to_name_map.get(pid, pid) for pid in t1_new_roster])
+        
+        print(f"  Final Active Roster Size: {len(t1_new_roster)}")
+        # Print roster names split over lines for long lists
+        print("  Roster Players:")
+        for i in range(0, len(t1_roster_names), 5):
+            print(f"    {' | '.join(t1_roster_names[i:i+5])}")
+        # --- NEW PRINTING/LOGGING BLOCK FOR TEAM 1 END ---
                 
-        # 3. Construct new active rosters for Team 2 (Only trade logic applies)
+        # 3. Construct new active rosters for Team 2 (Trade logic only)
         t2_new_roster = []
         if team2_name != "FreeAgents":
             t2_new_roster = [p for p in t2_active_base if p not in t2_players_out]
@@ -861,6 +902,24 @@ def analyze_exact_trade(
                     if status != 'DROP': t2_new_roster.append(p)
                 else:
                     if status != 'INJ': t2_new_roster.append(p)
+            
+            # --- NEW PRINTING/LOGGING BLOCK FOR TEAM 2 START ---
+            t2_roster_names = sorted([id_to_name_map.get(pid, pid) for pid in t2_new_roster])
+            
+            print(f"\n--- {team2_name} Roster after trade ({scenario_name}) ---")
+            print(f"  Final Active Roster Size: {len(t2_new_roster)}")
+            print("  Roster Players:")
+            for i in range(0, len(t2_roster_names), 5):
+                print(f"    {' | '.join(t2_roster_names[i:i+5])}")
+            # --- NEW PRINTING/LOGGING BLOCK FOR TEAM 2 END ---
+        
+        print("-" * 50) # Separator for scenarios
+
+        # --- VALIDATION INJECTION ---
+        validate_and_crash_if_invalid_roster(team1_name, t1_new_roster, scenario, id_to_name_map)
+        if team2_name != "FreeAgents":
+            validate_and_crash_if_invalid_roster(team2_name, t2_new_roster, scenario, id_to_name_map)
+        # ----------------------------
 
         # Fast Sim
         t1_new_weeks = build_team_weeks_from_players(t1_new_roster, player_weekly_stats_map, n_sim_weeks)
@@ -868,6 +927,7 @@ def analyze_exact_trade(
         if team2_name != "FreeAgents":
             t2_new_weeks = build_team_weeks_from_players(t2_new_roster, player_weekly_stats_map, n_sim_weeks)
         
+        # ... (Remaining calculation logic is unchanged) ...
         # Stats containers
         t1_deltas = {}
         t2_deltas = {}
@@ -928,7 +988,7 @@ def analyze_exact_trade(
             "t2_new_vals": t2_new_vals
         }
 
-    # 3. Report Results (Copied from find_trades reporting logic)
+    # 3. Report Results (Unchanged)
     
     def get_player_names(player_ids):
         return [id_to_name_map.get(pid, pid) for pid in player_ids]

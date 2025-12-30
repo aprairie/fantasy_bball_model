@@ -31,16 +31,24 @@ python database.py
 # echo "Scraping game stats and saving to db"; python main.py scrape --years 2026
 # echo "Printing Player availabilities and saving to DB"; python main.py availability
 # echo "Trial run of Head to Head Matchups"; python main.py h2h
-# echo "Trial run of Trade Simulation"; python main.py trade --team1 "Alex" --team2 "David" -n 2 -t 0.0 --injured 
-# echo "Trial run of Trade Simulation with Mandatory Players"; python main.py trade --team1 "Alex" --team2 "David" -n 3 -t 0.0 --injured --include "Kevin Durant" "Pascal Siakam" "Kristaps Porzingis"
 # echo "Running generate z scores for players"; python main.py values
 # echo "Exporting player stats to 'player_stats.csv'..."; python main.py export
+# echo "Trial run of Trade Simulation"; python main.py trade --team1 "Alex" --team2 "David" -n 2 -t 0.0 --injured
+# echo "Trial run of Trade Simulation with Mandatory Players"; python main.py trade --team1 "Alex" --team2 "David" -n 3 -t 0.1 --injured --include  "Kevin Durant" "Ryan Rollins" "Trae Young"
 # echo "Find best free agent pickups"; python main.py trade --team1 "Alex" --team2 "FreeAgents" -n 1
-# echo "Find best free agent pickups"; python main.py trade --team1 "Alex" --team2 "FreeAgents" -n 2 --include "Joel Embiid"
+# echo "Find best free agent pickups"; python main.py trade --team1 "Alex" --team2 "FreeAgents" -n 1 --include "Joel Embiid"
 
 echo "Try Exact Trade"; python main.py exact-trade \
   --team1 "Alex" --team2 "Simon" \
-  --t1-gives "Trae Young" "Pascal Siakam" "Joel Embiid"\
-  --t2-gives "Karl-Anthony Towns" "Bennedict Mathurin" "Quentin Grimes"
+  --t1-gives "Ryan Rollins" "Paul George" "Joel Embiid"\
+  --t2-gives "Peyton Watson" "Kel'el Ware" "RJ Barrett"
+
+# echo "Try Exact Trade With Drops"; python main.py exact-trade \
+#     --team1 "Alex" \
+#     --team2 "David" \
+#     --t1-gives "Trae Young" "Ryan Rollins" "Joel Embiid"\
+#     --t2-gives "Kevin Durant" "Anfernee Simons" "Cam Thomas"\
+#     --t1-drops "Anfernee Simons" "Cam Thomas" \
+#     --t1-adds "Jaylon Tyson" "Jay Huff"
 
 echo "Processing completed. Container will exit."
