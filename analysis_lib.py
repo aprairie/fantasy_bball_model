@@ -75,9 +75,11 @@ def filter_roster(
     active_roster = []
     for player_id, status in full_roster:
         if is_full_strength:
+            # In Full Strength, we keep INJ players, but remove DROP players
             if status != 'DROP':
                 active_roster.append(player_id)
         else:
+            # In Current, we keep DROP players (usually), but remove INJ players
             if status != 'INJ':
                 active_roster.append(player_id)
     return active_roster
@@ -506,20 +508,31 @@ def find_trades(
                 if not set(required_players).issubset(involved_players):
                     continue
 
-            # --- CHECK 2: Status Symmetry ---
-            # Only apply this if trading with a real team. 
+            # --- CHECK 2: Status Symmetry (CRITICAL FOR ROSTER SIZE) ---
             if team2_name != "FreeAgents":
+                # Real Team Trade: MUST exchange same status types to keep math valid
                 t1_drops = sum(1 for p in t1_players_out if player_status_map.get(p) == 'DROP')
                 t2_drops = sum(1 for p in t2_players_out if player_status_map.get(p) == 'DROP')
                 
                 if t1_drops != t2_drops:
+                    # Roster size would break in FullStrength scenario
                     continue 
 
                 t1_inj = sum(1 for p in t1_players_out if player_status_map.get(p) == 'INJ')
                 t2_inj = sum(1 for p in t2_players_out if player_status_map.get(p) == 'INJ')
                 
                 if t1_inj != t2_inj:
+                    # Roster size would break in Current scenario
                     continue
+            else:
+                # Free Agent Trade
+                # If we drop a 'DROP' player to pick up a FA, we handle it via reassignment logic later.
+                # However, if we drop an 'INJ' player to pick up a 'Healthy' FA, the "Current" roster size will increase by 1.
+                # We must prevent trading away INJ players for FAs.
+                t1_inj = sum(1 for p in t1_players_out if player_status_map.get(p) == 'INJ')
+                if t1_inj > 0:
+                    continue
+
             
             # --- Check 2.5: Count Drops leaving T1 (For Free Agent Logic) ---
             drops_exiting_t1 = 0

@@ -33,15 +33,15 @@ python database.py
 # echo "Trial run of Head to Head Matchups"; python main.py h2h
 # echo "Running generate z scores for players"; python main.py values
 # echo "Exporting player stats to 'player_stats.csv'..."; python main.py export
-# echo "Trial run of Trade Simulation"; python main.py trade --team1 "Alex" --team2 "David" -n 2 -t 0.0 --injured
-# echo "Trial run of Trade Simulation with Mandatory Players"; python main.py trade --team1 "Alex" --team2 "David" -n 3 -t 0.1 --injured --include  "Kevin Durant" "Ryan Rollins" "Trae Young"
+echo "Trial run of Trade Simulation"; python main.py trade --team1 "Alex" --team2 "Simon" -n 2 -t 0.0 --injured
+# echo "Trial run of Trade Simulation with Mandatory Players"; python main.py trade --team1 "Alex" --team2 "Simon" -n 2 -t 0.1 --injured --include "Ryan Rollins"
 # echo "Find best free agent pickups"; python main.py trade --team1 "Alex" --team2 "FreeAgents" -n 1
 # echo "Find best free agent pickups"; python main.py trade --team1 "Alex" --team2 "FreeAgents" -n 1 --include "Joel Embiid"
 
-echo "Try Exact Trade"; python main.py exact-trade \
-  --team1 "Alex" --team2 "Simon" \
-  --t1-gives "Ryan Rollins" "Paul George" "Joel Embiid"\
-  --t2-gives "Peyton Watson" "Kel'el Ware" "RJ Barrett"
+# echo "Try Exact Trade"; python main.py exact-trade \
+#   --team1 "Alex" --team2 "Simon" \
+#   --t1-gives "Ryan Rollins" "Paul George" "Joel Embiid"\
+#   --t2-gives "Peyton Watson" "Kel'el Ware" "RJ Barrett"
 
 # echo "Try Exact Trade With Drops"; python main.py exact-trade \
 #     --team1 "Alex" \
