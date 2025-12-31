@@ -534,6 +534,27 @@ def upsert_season_values(db: Session, values_to_upsert: list, target_season: int
         db.rollback()
         print("--- Rolled back changes. ---")
 
+def print_score_statistics(scores_dict: dict, label: str):
+    """
+    Prints mean and std dev for final normalized scores to verify calibration.
+    """
+    print(f"\n--- Verification: Score Stats for {label} ---")
+    keys = ['pts_score', 'reb_score', 'ast_score', 'stl_score', 'blk_score',
+            'tpm_score', 'to_score', 'fg_pct_score', 'ft_pct_score', 'total_score']
+
+    # Header
+    print(f"{'Category':<15} {'Mean':<10} {'Std Dev':<10}")
+    print("-" * 35)
+
+    for key in keys:
+        values = [d[key] for d in scores_dict.values()]
+        if not values: continue
+        mean_val = np.mean(values)
+        std_val = np.std(values)
+        print(f"{key:<15} {mean_val:<10.4f} {std_val:<10.4f}")
+    print("-" * 35)
+
+
 def calculate_all_player_values(session: Session):
     """
     Runs the full pipeline:
@@ -595,8 +616,30 @@ def calculate_all_player_values(session: Session):
         # Calculate Final Benchmarks and Variances
         final_benchmarks = get_benchmarks(final_cohort_stats)
         
-        pts_scores_cohort = [(s['avg_pts']/final_benchmarks['pts'])*10 for s in final_cohort_stats]
-        target_std_dev = np.std(pts_scores_cohort)
+        # --- MODIFIED SECTION: TARGET STD DEV ---
+        # Instead of just Points, we calculate the average StdDev of all 7 counting categories.
+        # Categories: PTS, REB, AST, STL, BLK, TPM, TO
+        counting_cats = ['pts', 'reb', 'ast', 'stl', 'blk', 'tpm', 'to']
+        std_devs_list = []
+
+        print("\nCalculating Target StdDev from Cohort:")
+        for cat in counting_cats:
+            # We must replicate the score scaling logic: (val / benchmark) * 10 (or -10 for TO)
+            multiplier = -10 if cat == 'to' else 10
+            cat_key = f"avg_{cat}"
+            
+            # Calculate raw scores for this category
+            scores_for_cat = [
+                (s[cat_key] / final_benchmarks[cat]) * multiplier 
+                for s in final_cohort_stats
+            ]
+            
+            cat_std = np.std(scores_for_cat)
+            std_devs_list.append(cat_std)
+            print(f" - {cat.upper()} StdDev: {cat_std:.4f}")
+
+        target_std_dev = np.mean(std_devs_list)
+        # ----------------------------------------
         
         fg_imp = [s['fg_impact'] for s in final_cohort_stats]
         ft_imp = [s['ft_impact'] for s in final_cohort_stats]
@@ -608,7 +651,7 @@ def calculate_all_player_values(session: Session):
         }
 
         logger.info('Benchmarks calculated')
-        print(f"Benchmarks calculated. StdDev Target: {target_std_dev:.4f}")
+        print(f"Benchmarks calculated. Final Target StdDev (Avg of 7 Cats): {target_std_dev:.4f}")
 
 
         # ==================================================================
@@ -632,8 +675,16 @@ def calculate_all_player_values(session: Session):
                 values_normal.append({
                     'player_id': player_id,
                     'season': CALCULATION_SEASON, # <--- Stored as 2026
-                    **scores
+                    '**scores': scores # Note: this assumes ** unpacking works or you construct the dict manually
+                    # Correction: Unpacking inside list comprehension construction
                 })
+                # Re-constructing the dict properly:
+                row = scores.copy()
+                row['player_id'] = player_id
+                row['season'] = CALCULATION_SEASON
+                
+            # Need to re-loop properly for upsert list
+            values_normal = [{**scores, 'player_id': pid, 'season': CALCULATION_SEASON} for pid, scores in normal_scores.items()]
             
             upsert_season_values(session, values_normal, CALCULATION_SEASON)
         else:
@@ -661,15 +712,13 @@ def calculate_all_player_values(session: Session):
                 sim_stats_healthy, final_benchmarks, target_std_dev, impact_means, impact_std_devs
             )
             
-            values_sim = []
-            for player_id, scores in sim_scores.items():
-                values_sim.append({
-                    'player_id': player_id,
-                    'season': SIMULATED_SEASON_ID, # <--- Stored as 1
-                    **scores
-                })
+            values_sim = [{**scores, 'player_id': pid, 'season': SIMULATED_SEASON_ID} for pid, scores in sim_scores.items()]
             
             upsert_season_values(session, values_sim, SIMULATED_SEASON_ID)
+            
+            # --- NEW: PRINT VERIFICATION ---
+            print_score_statistics(sim_scores, f"Simulated Healthy (S{SIMULATED_SEASON_ID})")
+            
         else:
             print("No simulated stats generated.")
             logger.info('no simulated stats generated')
@@ -696,13 +745,7 @@ def calculate_all_player_values(session: Session):
                 sim_stats_risky, final_benchmarks, target_std_dev, impact_means, impact_std_devs
             )
             
-            values_sim_risky = []
-            for player_id, scores in sim_scores_risky.items():
-                values_sim_risky.append({
-                    'player_id': player_id,
-                    'season': RISK_ADJUSTED_SEASON_ID, # <--- Stored as 2
-                    **scores
-                })
+            values_sim_risky = [{**scores, 'player_id': pid, 'season': RISK_ADJUSTED_SEASON_ID} for pid, scores in sim_scores_risky.items()]
             
             upsert_season_values(session, values_sim_risky, RISK_ADJUSTED_SEASON_ID)
         else:
